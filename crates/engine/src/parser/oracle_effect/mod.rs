@@ -13174,31 +13174,24 @@ impl EqualToQtyVerb {
     }
 
     /// Card-count verbs (draw / mill) own the single-verb "equal to" arm.
-    /// Single-verb life clauses ("gain life equal to …") keep the richer
-    /// `parse_life_equal_quantity` authority in the imperative path.
+    /// Defensive: single-verb life clauses ("gain life equal to …") are owned by
+    /// `parse_life_equal_quantity` (imperative path); this gate keeps this arm from
+    /// becoming their authority if dispatch order changes.
     fn counts_cards(self) -> bool {
         matches!(self, Self::Mill | Self::Draw)
     }
 
     /// Lower one conjunct of a shared-tail compound. An explicit subject
-    /// ("you") binds the recipient of every conjunct, mirroring
+    /// ("you") binds the recipient of every conjunct through
     /// `inject_subject_target`, which promotes `LoseLife { target: None }` to
     /// the parsed player subject — so "you draw cards and lose life equal to …"
     /// lowers its loss exactly like "you lose life equal to …" and a
     /// propagated parent player target cannot re-route it (CR 109.5: "you" is
     /// the controller; CR 119.3).
-    fn lower_conjunct(self, qty: QuantityExpr, subject: Option<&TargetFilter>) -> Effect {
+    fn lower_conjunct(self, qty: QuantityExpr, subject: Option<&SubjectPhraseAst>) -> Effect {
         let mut effect = imperative::lower_numeric_imperative_ast(self.into_numeric_ast(qty));
         if let Some(subject) = subject {
-            match &mut effect {
-                Effect::LoseLife { target, .. } => *target = Some(subject.clone()),
-                Effect::GainLife { player, .. } => *player = subject.clone(),
-                Effect::Draw { target, .. } | Effect::Mill { target, .. } => {
-                    *target = subject.clone();
-                }
-                // `into_numeric_ast` only yields the four arms above.
-                _ => {}
-            }
+            inject_subject_target(&mut effect, subject);
         }
         effect
     }
@@ -13270,10 +13263,29 @@ fn parse_equal_to_quantity_tail(rest_lower: &str) -> Option<QuantityExpr> {
         .or_else(|| super::oracle_quantity::parse_cda_quantity(rest))
 }
 
+/// CR 608.2c: True when a shared "equal to" quantity reads the resolution-local
+/// result of the preceding instruction — `PreviousEffectAmount` /
+/// `PreviousEffectCount`, or `EventContextAmount`, whose runtime cascade falls
+/// back to `last_effect_count` / `last_effect_amount`. Every conjunct of a
+/// shared-tail compound re-stamps that result as it resolves, so a chained
+/// conjunct would read its predecessor conjunct instead of the instruction the
+/// text refers to (Eventide's Shadow: "… equal to the number of counters
+/// removed this way").
+fn quantity_reads_previous_effect_result(qty: &QuantityExpr) -> bool {
+    qty.any_ref(&mut |reference| {
+        matches!(
+            reference,
+            QuantityRef::PreviousEffectAmount { .. }
+                | QuantityRef::PreviousEffectCount
+                | QuantityRef::EventContextAmount
+        )
+    })
+}
+
 /// Parse "{verb} cards equal to {quantity_ref}" patterns (CR 121.1 + CR 701.17a).
 ///
 /// Handles verbs whose count field is `QuantityExpr` (mill, draw). The
-/// `counts_cards` gate keeps single-verb life clauses on
+/// `counts_cards` gate is defensive: single-verb life clauses belong to
 /// `parse_life_equal_quantity` (imperative path).
 fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
     let (rest_lower, verb) = terminated(
@@ -22172,6 +22184,21 @@ fn try_parse_shared_equal_to_quantity_compound(tp: TextPair) -> Option<ParsedEff
     .parse(tp.lower)
     .ok()?;
     let qty = parse_equal_to_quantity_tail(rest_lower)?;
+    // CR 608.2c: a look-back at the preceding instruction's result cannot be
+    // shared — each conjunct would re-stamp it for the next. Decline so the
+    // clause stays honestly unimplemented.
+    if quantity_reads_previous_effect_result(&qty) {
+        return None;
+    }
+    // The only admitted subject is "you" (`parse_equal_to_qty_conjuncts`),
+    // applied to each conjunct exactly as a printed subject would be.
+    let subject = subject.map(|affected| SubjectPhraseAst {
+        affected: Some(affected),
+        target: None,
+        multi_target: None,
+        inherits_parent: false,
+        is_optional: false,
+    });
     let (head, tail) = verbs.split_first()?;
     // CR 608.2c: instructions resolve in the order written — right-fold the
     // trailing conjuncts into a `sub_ability` chain under the head.

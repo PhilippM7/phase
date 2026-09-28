@@ -74145,7 +74145,7 @@ fn shared_equal_to_quantity_compound_stays_one_chunk() {
     let card_noun = chunk_texts("you gain life and draw a card.");
     assert_eq!(card_noun.len(), 2, "{card_noun:?}");
     // A different subject is not admitted (tight subject guard).
-    let other_subject = chunk_texts("target player gains life and draw cards equal to its power.");
+    let other_subject = chunk_texts("they gain life and draw cards equal to its power.");
     assert_eq!(other_subject.len(), 2, "{other_subject:?}");
 }
 
@@ -74270,6 +74270,53 @@ fn shared_equal_to_quantity_unparseable_qty_stays_unimplemented() {
         assert!(
             chain_has_unimplemented(&def),
             "{text}: unparseable quantity must stay Unimplemented, got {def:?}"
+        );
+    }
+}
+
+/// CR 608.2c: Eventide's Shadow's verbatim second sentence shares a "this
+/// way" look-back (`PreviousEffectAmount`). Each conjunct re-stamps the
+/// previous-effect result, so the distributor must decline instead of cloning
+/// that quantity into a chained conjunct; the clause stays Unimplemented.
+/// Reach-guard: T2 proves the same Draw → LoseLife shape lowers fully when
+/// the shared quantity is not resolution-local.
+#[test]
+fn shared_equal_to_quantity_declines_previous_effect_look_back() {
+    let positive = parse_effect_chain(
+        "You draw cards and lose life equal to its power.",
+        AbilityKind::Spell,
+    );
+    assert_eq!(
+        shared_equal_to_chain_effects(&positive).len(),
+        2,
+        "reach-guard: parseable shared quantity lowers to a two-link chain"
+    );
+    assert_eq!(chain_unimplemented_count(&positive), 0, "reach-guard");
+
+    let reads_previous = |effect: &Effect| {
+        let mut hit = false;
+        effect.for_each_quantity_expr(&mut |qty| {
+            hit |= qty.any_ref(&mut |r| matches!(r, QuantityRef::PreviousEffectAmount { .. }));
+        });
+        hit
+    };
+    for text in [
+        "You draw cards and lose life equal to the number of counters removed this way.",
+        "Remove any number of counters from among permanents on the battlefield. You draw cards and lose life equal to the number of counters removed this way.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let effects = shared_equal_to_chain_effects(&def);
+        assert!(
+            !effects.windows(2).any(|pair| matches!(
+                pair,
+                [draw @ Effect::Draw { .. }, lose @ Effect::LoseLife { .. }]
+                    if reads_previous(draw) && reads_previous(lose)
+            )),
+            "{text}: must not chain Draw -> LoseLife sharing a previous-effect quantity, got {effects:?}"
+        );
+        assert!(
+            chain_has_unimplemented(&def),
+            "{text}: declined compound stays Unimplemented, got {def:?}"
         );
     }
 }
