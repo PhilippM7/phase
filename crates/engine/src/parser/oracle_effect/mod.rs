@@ -13263,14 +13263,15 @@ fn parse_equal_to_quantity_tail(rest_lower: &str) -> Option<QuantityExpr> {
         .or_else(|| super::oracle_quantity::parse_cda_quantity(rest))
 }
 
-/// CR 608.2c: True when a shared "equal to" quantity reads the resolution-local
-/// result of the preceding instruction — `PreviousEffectAmount` /
-/// `PreviousEffectCount`, or `EventContextAmount`, whose runtime cascade falls
-/// back to `last_effect_count` / `last_effect_amount`. Every conjunct of a
-/// shared-tail compound re-stamps that result as it resolves, so a chained
-/// conjunct would read its predecessor conjunct instead of the instruction the
-/// text refers to (Eventide's Shadow: "… equal to the number of counters
-/// removed this way").
+/// CR 608.2c + CR 608.2h: True when a shared "equal to" quantity reads the
+/// resolution-local result of the preceding instruction — `PreviousEffectAmount`
+/// / `PreviousEffectCount`, or `EventContextAmount`, whose runtime cascade
+/// falls back to `last_effect_count` / `last_effect_amount`. CR 608.2h fixes
+/// that result once, when the referenced effect is applied; every conjunct of
+/// a shared-tail compound re-stamps it as it resolves, so a chained conjunct
+/// would read its predecessor conjunct's fixed result instead of the
+/// instruction the text refers to (Eventide's Shadow: "… equal to the number
+/// of counters removed this way").
 fn quantity_reads_previous_effect_result(qty: &QuantityExpr) -> bool {
     qty.any_ref(&mut |reference| {
         matches!(
