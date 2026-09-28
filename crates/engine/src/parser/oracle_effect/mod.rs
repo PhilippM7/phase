@@ -10344,6 +10344,12 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return clause;
     }
 
+    // CR 608.2c: "you gain life and draw cards equal to <qty>" — one trailing
+    // "equal to" shared by coordinated amount-elided verbs (Lifeblood Hydra).
+    if let Some(clause) = try_parse_shared_equal_to_quantity_compound(tp) {
+        return clause;
+    }
+
     // CR 122.1 + CR 608.2d: Bribe Taker — "[you may] put your choice of a
     // <fixed> counter or a counter of that kind on ~". Runs before the generic
     // for-each path; the `DistinctCounterKindsAmong` iteration source has already
@@ -13135,29 +13141,121 @@ fn try_parse_skip_next_turn(tp: TextPair) -> Option<ParsedEffectClause> {
     Some(parsed_clause(Effect::SkipNextTurn { target, count }))
 }
 
-/// Verb discriminant for `try_parse_equal_to_quantity_effect`. Using a typed
-/// enum instead of a matched `&str` keeps all dispatch inside the nom `alt()`
-/// combinator — the match arms below are exhaustive Rust enum arms, not
-/// string-literal dispatch (CLAUDE.md nom-combinator mandate).
-#[derive(Clone, Copy)]
+/// Verb discriminant for the amount-elided "{verb} … equal to {quantity}"
+/// family (`try_parse_equal_to_quantity_effect` and
+/// `try_parse_shared_equal_to_quantity_compound`). Using a typed enum instead
+/// of a matched `&str` keeps all dispatch inside the nom `alt()` combinator —
+/// the match arms below are exhaustive Rust enum arms, not string-literal
+/// dispatch (CLAUDE.md nom-combinator mandate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EqualToQtyVerb {
     Mill,
     Draw,
+    GainLife,
+    LoseLife,
 }
 
-/// Parse "{verb} cards equal to {quantity_ref}" patterns (CR 121.1 + CR 701.17a).
-///
-/// Handles verbs whose count field is `QuantityExpr` (mill, draw).
-fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
-    // Try matching "mill cards equal to " or "draw cards equal to " using nom.
-    let (verb, rest_orig) = nom_on_lower(tp.original, tp.lower, |input| {
-        alt((
-            value(EqualToQtyVerb::Mill, tag("mill cards equal to ")),
-            value(EqualToQtyVerb::Draw, tag("draw cards equal to ")),
-        ))
+impl EqualToQtyVerb {
+    /// CR 121.1 + CR 119.3 + CR 701.17a: one amount-elided conjunct takes its
+    /// count from the (possibly shared) "equal to" quantity. Lowering goes
+    /// through `lower_numeric_imperative_ast` so the recipient defaults
+    /// (Controller draws / gains / mills; `LoseLife { target: None }`) stay
+    /// single-sourced with the numeric imperative path.
+    fn into_numeric_ast(self, qty: QuantityExpr) -> NumericImperativeAst {
+        match self {
+            Self::Mill => NumericImperativeAst::Mill { count: qty },
+            Self::Draw => NumericImperativeAst::Draw {
+                count: qty,
+                up_to: false,
+            },
+            Self::GainLife => NumericImperativeAst::GainLife { amount: qty },
+            Self::LoseLife => NumericImperativeAst::LoseLife { amount: qty },
+        }
+    }
+
+    /// Card-count verbs (draw / mill) own the single-verb "equal to" arm.
+    /// Single-verb life clauses ("gain life equal to …") keep the richer
+    /// `parse_life_equal_quantity` authority in the imperative path.
+    fn counts_cards(self) -> bool {
+        matches!(self, Self::Mill | Self::Draw)
+    }
+
+    /// Lower one conjunct of a shared-tail compound. An explicit subject
+    /// ("you") binds the recipient of every conjunct, mirroring
+    /// `inject_subject_target`, which promotes `LoseLife { target: None }` to
+    /// the parsed player subject — so "you draw cards and lose life equal to …"
+    /// lowers its loss exactly like "you lose life equal to …" and a
+    /// propagated parent player target cannot re-route it (CR 109.5: "you" is
+    /// the controller; CR 119.3).
+    fn lower_conjunct(self, qty: QuantityExpr, subject: Option<&TargetFilter>) -> Effect {
+        let mut effect = imperative::lower_numeric_imperative_ast(self.into_numeric_ast(qty));
+        if let Some(subject) = subject {
+            match &mut effect {
+                Effect::LoseLife { target, .. } => *target = Some(subject.clone()),
+                Effect::GainLife { player, .. } => *player = subject.clone(),
+                Effect::Draw { target, .. } | Effect::Mill { target, .. } => {
+                    *target = subject.clone();
+                }
+                // `into_numeric_ast` only yields the four arms above.
+                _ => {}
+            }
+        }
+        effect
+    }
+}
+
+/// "mill cards" / "draw cards" / "gain life" / "lose life" — the amount-elided
+/// verb head whose count is supplied by a trailing "equal to <quantity>".
+/// Verb axis × resource axis are composed, not enumerated.
+fn parse_equal_to_qty_verb_head(input: &str) -> OracleResult<'_, EqualToQtyVerb> {
+    alt((
+        terminated(
+            alt((
+                value(EqualToQtyVerb::Mill, tag("mill")),
+                value(EqualToQtyVerb::Draw, tag("draw")),
+            )),
+            tag(" cards"),
+        ),
+        terminated(
+            alt((
+                value(EqualToQtyVerb::GainLife, tag("gain")),
+                value(EqualToQtyVerb::LoseLife, tag("lose")),
+            )),
+            tag(" life"),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 608.2c: "[you ]<head>[ and <head>]*" — coordinated amount-elided verb
+/// heads with the only subject a shared-tail compound admits (none, or "you",
+/// returned as its `TargetFilter::Controller` recipient). Single grammar for
+/// both consumers: the clause distributor
+/// (`try_parse_shared_equal_to_quantity_compound`) and the chunker guard in
+/// `sequence::split_clause_sequence`, so the two cannot drift.
+fn parse_equal_to_qty_conjuncts(
+    input: &str,
+) -> OracleResult<'_, (Option<TargetFilter>, Vec<EqualToQtyVerb>)> {
+    (
+        opt(value(TargetFilter::Controller, tag("you "))),
+        separated_list1(tag(" and "), parse_equal_to_qty_verb_head),
+    )
         .parse(input)
-    })?;
-    let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
+}
+
+/// "<head>[ and <head>]* equal to " — the remaining conjunct run up to the
+/// shared "equal to" postmodifier (chunker-guard remainder side).
+fn parse_equal_to_qty_verb_run(input: &str) -> OracleResult<'_, Vec<EqualToQtyVerb>> {
+    terminated(
+        separated_list1(tag(" and "), parse_equal_to_qty_verb_head),
+        tag(" equal to "),
+    )
+    .parse(input)
+}
+
+/// Quantity ladder for the text after "equal to ". Single authority for the
+/// single-verb and shared-tail compound paths.
+fn parse_equal_to_quantity_tail(rest_lower: &str) -> Option<QuantityExpr> {
     let rest = rest_lower.trim().trim_end_matches('.');
     // Prefer event context quantity for triggered effects — keeps
     // "that much"/"this way"/"that many" bound to the triggering-event amount.
@@ -13168,22 +13266,31 @@ fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause
     // `parse_cda_quantity` so binary minus / offset / fraction draw counts
     // resolve instead of dropping the whole clause. Event-context FIRST is what
     // preserves the trigger semantics for the cards that need them.
-    let qty = super::oracle_quantity::parse_event_context_quantity(rest)
-        .or_else(|| super::oracle_quantity::parse_cda_quantity(rest))?;
-    match verb {
-        EqualToQtyVerb::Mill => Some(parsed_clause(Effect::Mill {
-            count: qty,
-            // CR 701.17a: No subject → controller mills.
-            target: TargetFilter::Controller,
-            destination: Zone::Graveyard,
-        })),
-        // CR 121.1 + CR 601.2c: Default Controller target — `inject_subject_target`
-        // upgrades to `TargetFilter::Player` for "target player draws ..." subjects.
-        EqualToQtyVerb::Draw => Some(parsed_clause(Effect::Draw {
-            count: qty,
-            target: TargetFilter::Controller,
-        })),
-    }
+    super::oracle_quantity::parse_event_context_quantity(rest)
+        .or_else(|| super::oracle_quantity::parse_cda_quantity(rest))
+}
+
+/// Parse "{verb} cards equal to {quantity_ref}" patterns (CR 121.1 + CR 701.17a).
+///
+/// Handles verbs whose count field is `QuantityExpr` (mill, draw). The
+/// `counts_cards` gate keeps single-verb life clauses on
+/// `parse_life_equal_quantity` (imperative path).
+fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
+    let (rest_lower, verb) = terminated(
+        verify(parse_equal_to_qty_verb_head, |verb: &EqualToQtyVerb| {
+            verb.counts_cards()
+        }),
+        tag(" equal to "),
+    )
+    .parse(tp.lower)
+    .ok()?;
+    let qty = parse_equal_to_quantity_tail(rest_lower)?;
+    // CR 701.17a: No subject → controller mills. CR 121.1 + CR 601.2c: Default
+    // Controller target — `inject_subject_target` upgrades to
+    // `TargetFilter::Player` for "target player draws ..." subjects.
+    Some(parsed_clause(imperative::lower_numeric_imperative_ast(
+        verb.into_numeric_ast(qty),
+    )))
 }
 
 /// Parse "owner puts it on their choice of the top or bottom of their library".
@@ -22037,6 +22144,51 @@ fn parse_compound_subject_prefix(lower: &str) -> Option<CompoundSubjectPrefix> {
 /// path skip anaphoric re-targeting for distributed chains.
 fn text_is_compound_subject_distribution(text: &str) -> bool {
     parse_compound_subject_prefix(&text.to_lowercase()).is_some()
+}
+
+/// CR 608.2c: "[you ]<verb> <resource> and <verb> <resource> [and …] equal to
+/// <quantity>" — coordinated amount-elided verbs sharing ONE trailing
+/// "equal to" postmodifier (Lifeblood Hydra: "you gain life and draw cards
+/// equal to its power"). Read by the rules of English, the postmodifier binds
+/// to every conjunct, so each conjunct is lowered with the same quantity and
+/// the effects chain in printed order. Structural dual of
+/// `try_parse_compound_subject_each` (a shared leading subject distributed over
+/// one body); the chunker guard in `sequence::split_clause_sequence` keeps the
+/// compound as one chunk through the same `parse_equal_to_qty_conjuncts`
+/// grammar.
+///
+/// CR 608.2h: every conjunct carries the same `QuantityExpr`, resolved when
+/// each effect is applied; for a source-relative quantity ("its power") on a
+/// leaves-the-battlefield trigger that read comes from last known information.
+///
+/// Compound life conjuncts use the equal-to seam's quantity ladder
+/// (`parse_equal_to_quantity_tail`), while single-verb life clauses keep
+/// `parse_life_equal_quantity` (see `EqualToQtyVerb::counts_cards`).
+fn try_parse_shared_equal_to_quantity_compound(tp: TextPair) -> Option<ParsedEffectClause> {
+    let (rest_lower, (subject, verbs)) = verify(
+        terminated(parse_equal_to_qty_conjuncts, tag(" equal to ")),
+        |(_, verbs): &(Option<TargetFilter>, Vec<EqualToQtyVerb>)| verbs.len() >= 2,
+    )
+    .parse(tp.lower)
+    .ok()?;
+    let qty = parse_equal_to_quantity_tail(rest_lower)?;
+    let (head, tail) = verbs.split_first()?;
+    // CR 608.2c: instructions resolve in the order written — right-fold the
+    // trailing conjuncts into a `sub_ability` chain under the head.
+    let sub_ability = tail.iter().rev().fold(None, |next, verb| {
+        let link = AbilityDefinition::new(
+            AbilityKind::Spell,
+            verb.lower_conjunct(qty.clone(), subject.as_ref()),
+        );
+        Some(match next {
+            Some(next) => link.sub_ability(next),
+            None => link,
+        })
+    });
+    Some(ParsedEffectClause {
+        sub_ability: sub_ability.map(Box::new),
+        ..parsed_clause(head.lower_conjunct(qty, subject.as_ref()))
+    })
 }
 
 fn try_parse_compound_subject_each(
