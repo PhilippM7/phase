@@ -74579,6 +74579,111 @@ fn shared_equal_to_quantity_declines_tracked_set_look_back() {
     );
 }
 
+/// CR 608.2c + CR 608.2h: a DECLINED shared-tail compound must lower as one
+/// honest `Unimplemented` for every verb order — never a partial effect. The
+/// chunker guard holds the compound as one chunk, so when the distributor
+/// declines a chain-local quantity a later single-verb handler (gain-life /
+/// lose-life "equal to") would otherwise accept only the head conjunct and
+/// silently drop the rest.
+#[test]
+fn shared_equal_to_quantity_declined_compound_never_lowers_partially() {
+    let positive = parse_effect_chain(
+        "You gain life and draw cards equal to its power.",
+        AbilityKind::Spell,
+    );
+    assert_eq!(chain_unimplemented_count(&positive), 0, "reach-guard");
+    assert_eq!(
+        shared_equal_to_chain_effects(&positive).len(),
+        2,
+        "reach-guard"
+    );
+
+    let verbs = ["gain life", "lose life", "draw cards", "mill cards"];
+    let quantities = [
+        "the number of creatures dealt damage this way",
+        "the damage dealt this way",
+        "the number of counters removed this way",
+    ];
+    for first in verbs {
+        for second in verbs {
+            if first == second {
+                continue;
+            }
+            for quantity in quantities {
+                let text = format!("You {first} and {second} equal to {quantity}.");
+                let def = parse_effect_chain(&text, AbilityKind::Spell);
+                let effects = shared_equal_to_chain_effects(&def);
+                assert!(
+                    chain_has_unimplemented(&def),
+                    "{text}: declined compound must stay Unimplemented, got {effects:?}"
+                );
+                assert!(
+                    effects
+                        .iter()
+                        .all(|effect| matches!(effect, Effect::Unimplemented { .. })),
+                    "{text}: no partial lowering of a declined compound, got {effects:?}"
+                );
+            }
+        }
+    }
+
+    let text = "Deal 3 damage to target creature. You gain life and draw cards equal to the damage dealt this way.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let effects = shared_equal_to_chain_effects(&def);
+    assert!(
+        chain_has_unimplemented(&def)
+            && !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::GainLife { .. } | Effect::Draw { .. })),
+        "{text}: no partial GainLife/Draw, got {effects:?}"
+    );
+}
+
+/// CR 608.2c + CR 608.2h: `PlayerCount { PerformedActionThisWay(Draw) }` reads a
+/// ledger that a Draw conjunct itself appends to, so it is chain-local: the
+/// distributor must decline instead of sharing it (the count would grow 1 -> 2).
+/// Reach-guard: the single-verb form reads the ledger.
+#[test]
+fn shared_equal_to_quantity_declines_performed_action_ledger() {
+    let reads_ledger = |effect: &Effect| {
+        let mut hit = false;
+        effect.for_each_quantity_expr(&mut |qty| {
+            hit |= qty.any_ref(&mut |r| {
+                matches!(
+                    r,
+                    QuantityRef::PlayerCount {
+                        filter: PlayerFilter::PerformedActionThisWay { .. }
+                    }
+                )
+            });
+        });
+        hit
+    };
+    let single = parse_effect_chain(
+        "You gain life equal to the number of players who drew a card this way.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        shared_equal_to_chain_effects(&single)
+            .iter()
+            .any(reads_ledger),
+        "reach-guard: phrase lowers to PerformedActionThisWay count, got {single:?}"
+    );
+
+    let text = "Each opponent draws a card. You draw cards and gain life equal to the number of players who drew a card this way.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let effects = shared_equal_to_chain_effects(&def);
+    assert!(
+        !effects.windows(2).any(|pair| matches!(
+            pair,
+            [draw @ Effect::Draw { .. }, gain @ Effect::GainLife { .. }]
+                if reads_ledger(draw) && reads_ledger(gain)
+        )),
+        "must not chain Draw -> GainLife sharing a ledger count, got {effects:?}"
+    );
+    assert!(chain_has_unimplemented(&def), "declined, got {def:?}");
+}
+
 /// T6: Blim's third-person, subject-scoped "each player loses life and
 /// discards cards equal to …" is deferred and keeps its `Unimplemented`
 /// (paired positive: T1 on Lifeblood Hydra).

@@ -13331,6 +13331,9 @@ fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
         QuantityRef::PropertyAggregate(aggregate) => source_reads_chain_set(aggregate.source()),
         QuantityRef::DistinctCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. } => source_reads_chain_set(source),
+        QuantityRef::PlayerCount { filter } | QuantityRef::EventContextPlayerCount { filter } => {
+            player_filter_reads_chain_local_result(filter)
+        }
         QuantityRef::HandSize { .. }
         | QuantityRef::LifeTotal { .. }
         | QuantityRef::GraveyardSize { .. }
@@ -13342,7 +13345,6 @@ fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
         | QuantityRef::ObjectCount { .. }
         | QuantityRef::ObjectCountDistinct { .. }
         | QuantityRef::ObjectCountBySharedQuality { .. }
-        | QuantityRef::PlayerCount { .. }
         | QuantityRef::CountersOn { .. }
         | QuantityRef::CountersOnObjects { .. }
         | QuantityRef::PlayerCounter { .. }
@@ -13371,7 +13373,6 @@ fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
         | QuantityRef::PartySize { .. }
         | QuantityRef::UnspentMana { .. }
         | QuantityRef::Speed { .. }
-        | QuantityRef::EventContextPlayerCount { .. }
         | QuantityRef::AttachmentsOnLeavingObject { .. }
         | QuantityRef::EventContextSourceCostX
         | QuantityRef::EventContextSourceModesChosen
@@ -13414,6 +13415,46 @@ fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
         | QuantityRef::DistinctColorsAmong { .. }
         | QuantityRef::DistinctCounterKindsAmong { .. }
         | QuantityRef::VoteCount { .. } => false,
+    }
+}
+
+/// Player-population half of [`quantity_ref_reads_chain_local_result`]. The
+/// "this way" player filters read transient ledgers that a shared-tail
+/// conjunct itself appends to (a Draw conjunct adds its player to
+/// `PerformedActionThisWay(Draw)`; a Mill's zone changes feed
+/// `ZoneChangedThisWay` / `TrackedSetPossessor`; the vote ledger is chain-local
+/// too), so the count would grow between conjuncts (CR 608.2c + CR 608.2h).
+/// Exhaustive on purpose, like the quantity classifier.
+fn player_filter_reads_chain_local_result(filter: &PlayerFilter) -> bool {
+    match filter {
+        PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::TrackedSetPossessor { .. }
+        | PlayerFilter::VotedFor { .. } => true,
+        PlayerFilter::AllExcept { exclude } => player_filter_reads_chain_local_result(exclude),
+        PlayerFilter::ControlsCount { count, .. } => quantity_reads_chain_local_result(count),
+        PlayerFilter::PlayerAttribute { attr, value, .. } => {
+            quantity_ref_reads_chain_local_result(attr) || quantity_reads_chain_local_result(value)
+        }
+        PlayerFilter::Controller
+        | PlayerFilter::Opponent
+        | PlayerFilter::DefendingPlayer
+        | PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::OpponentDealtDamage { .. }
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::OpponentAttackingEnchantedPlayer
+        | PlayerFilter::All
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ChosenPlayer { .. }
+        | PlayerFilter::ParentObjectTargetOwner => false,
     }
 }
 
@@ -22350,14 +22391,21 @@ fn try_parse_shared_equal_to_quantity_compound(tp: TextPair) -> Option<ParsedEff
     )
     .parse(tp.lower)
     .ok()?;
-    let qty = parse_equal_to_quantity_tail(rest_lower)?;
     // CR 608.2c + CR 608.2h: a look-back at the preceding instruction's result
-    // or at the chain tracked set cannot be shared — a conjunct would re-stamp
-    // or extend it for the next. Decline so the clause stays honestly
-    // unimplemented.
-    if quantity_reads_chain_local_result(&qty) {
-        return None;
-    }
+    // or at the chain tracked set / a "this way" ledger cannot be shared — a
+    // conjunct would re-stamp or extend it for the next. The chunker guard has
+    // already kept the compound as ONE chunk, and a later single-verb handler
+    // (e.g. the gain-life "equal to" arm) would accept just the head conjunct
+    // and silently drop the rest, so a decline must be an explicit
+    // `Unimplemented` for the whole clause, never `None`.
+    let Some(qty) = parse_equal_to_quantity_tail(rest_lower)
+        .filter(|qty| !quantity_reads_chain_local_result(qty))
+    else {
+        return Some(parsed_clause(Effect::unimplemented(
+            "shared_equal_to_quantity_compound",
+            tp.original,
+        )));
+    };
     // The only admitted subject is "you" (`parse_equal_to_qty_conjuncts`),
     // applied to each conjunct exactly as a printed subject would be.
     let subject = subject.map(|affected| SubjectPhraseAst {
