@@ -520,8 +520,9 @@ fn enters_with_counter_carrier_is_only_enters_with_marker(
 /// parser change to that shape fails loudly instead of being silently accepted.
 ///
 /// Declined (the warning stays): Hinder (`Counter { None }` plus a sub-ability
-/// `ChangeZone`, "your choice of top or bottom"), the exile-it-instead ETB counter card,
-/// the artifact-or-creature-onto-the-battlefield-under-your-control counter card, and
+/// `ChangeZone`, "your choice of top or bottom"); the exile-it-instead ETB counter card
+/// and the artifact-or-creature-onto-the-battlefield-under-your-control counter card are
+/// declined by construction (no Library/Hand slot), not fixture-tested; and
 /// a second " instead" sentence after a populated redirect (e.g. "you gain 2 life
 /// instead", or a different "countered this way ... instead" clause).
 ///
@@ -578,7 +579,8 @@ fn any_ability_has_countered_spell_zone_redirect(parsed: &ParsedAbilities) -> bo
 fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
     use nom::branch::alt;
     use nom::bytes::complete::tag;
-    use nom::combinator::value;
+    use nom::character::complete::multispace0;
+    use nom::combinator::{eof, opt, value};
     use nom::Parser;
 
     let (rest, _) = tag("put it ").parse(input)?;
@@ -595,7 +597,12 @@ fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), O
         tag("their owner's"),
     ))
     .parse(rest)?;
-    value((), tag(" graveyard")).parse(rest)
+    let (rest, _) = tag(" graveyard").parse(rest)?;
+    // The redirect must be the WHOLE sentence: an unmodelled tail (", and you gain 2 life
+    // instead ...") must not be swallowed by the typed slot.
+    let (rest, _) = opt(tag(".")).parse(rest)?;
+    let (rest, _) = multispace0.parse(rest)?;
+    value((), eof).parse(rest)
 }
 
 /// CR 701.6a + CR 614.1a: true when the typed countered-spell redirect accounts for
@@ -8400,7 +8407,9 @@ If you sang a song the whole time you were searching and shuffling, you may unta
     /// CR 701.6a + CR 614.1a + CR 608.2c: the typed countered-spell redirect IS the
     /// "instead" replacement (Memory Lapse, Spell Crumple, Remand) — but only when it is
     /// the sole " instead" clause. Declines: Hinder (`Counter{None}`), a second
-    /// unmodelled " instead" sentence, exile-it-instead and onto-battlefield counter cards.
+    /// unmodelled " instead" sentence, or an unmodelled same-sentence tail. The exile-it-instead
+    /// and onto-battlefield counter cards are declined by construction (no Library/Hand
+    /// slot), not fixture-tested.
     #[test]
     fn replacement_instead_accepts_countered_spell_zone_redirect() {
         use crate::types::ability::{Effect, SpellStackToGraveyardReplacement};
@@ -8510,6 +8519,25 @@ If you sang a song the whole time you were searching and shuffling, you may unta
         );
         assert!(has_swallowed_detector(
             &second_countered_instead,
+            "Replacement_Instead"
+        ));
+
+        // Hostile: same sentence — the redirect is followed by an unmodelled tail, so the
+        // shape must be anchored to the end of the sentence and keep the warning.
+        let same_sentence_tail = parse_named(
+            "Counter target spell. If that spell is countered this way, put it on top of its \
+             owner's library instead of into that player's graveyard and you gain 2 life \
+             instead of drawing a card.",
+            "Memory Lapse",
+            &["Instant"],
+        );
+        assert!(no_unimplemented(&same_sentence_tail));
+        assert!(
+            matches!(counter_zone(&same_sentence_tail), Some(Some(_))),
+            "same-sentence-tail fixture: expected Counter with countered_spell_zone"
+        );
+        assert!(has_swallowed_detector(
+            &same_sentence_tail,
             "Replacement_Instead"
         ));
     }
