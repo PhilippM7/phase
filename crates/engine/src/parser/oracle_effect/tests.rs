@@ -74574,8 +74574,11 @@ fn shared_equal_to_quantity_declines_tracked_set_look_back() {
         "must not chain Mill -> Draw sharing a tracked-set quantity, got {effects:?}"
     );
     assert!(
-        chain_has_unimplemented(&def),
-        "declined compound stays Unimplemented, got {def:?}"
+        matches!(
+            effects.as_slice(),
+            [Effect::Discard { .. }, Effect::Unimplemented { .. }]
+        ),
+        "preceding Discard survives and the whole Mill/Draw compound is declined, got {effects:?}"
     );
 }
 
@@ -74681,7 +74684,13 @@ fn shared_equal_to_quantity_declines_performed_action_ledger() {
         )),
         "must not chain Draw -> GainLife sharing a ledger count, got {effects:?}"
     );
-    assert!(chain_has_unimplemented(&def), "declined, got {def:?}");
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Draw { .. }, Effect::Unimplemented { .. }]
+        ),
+        "preceding opponent Draw survives and the whole Draw/GainLife compound is declined, got {effects:?}"
+    );
 }
 
 /// T6: Blim's third-person, subject-scoped "each player loses life and
