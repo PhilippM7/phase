@@ -519,6 +519,12 @@ fn enters_with_counter_carrier_is_only_enters_with_marker(
 /// bottom") is deliberately not a carrier, and `Some(Exile)` is pinned out so a future
 /// parser change to that shape fails loudly instead of being silently accepted.
 ///
+/// Declined (the warning stays): Hinder (`Counter { None }` plus a sub-ability
+/// `ChangeZone`, "your choice of top or bottom"), the exile-it-instead ETB counter card,
+/// the artifact-or-creature-onto-the-battlefield-under-your-control counter card, and
+/// a second " instead" sentence after a populated redirect (e.g. "you gain 2 life
+/// instead", or a different "countered this way ... instead" clause).
+///
 /// Deliberately NOT part of `effect_is_replacement_carrier`: that matcher also feeds
 /// the skip/enters-with/as-enters detector, where a Counter node proves nothing.
 fn def_tree_has_countered_spell_zone_redirect(def: &AbilityDefinition) -> bool {
@@ -564,21 +570,55 @@ fn any_ability_has_countered_spell_zone_redirect(parsed: &ParsedAbilities) -> bo
         })
 }
 
+/// CR 701.6a + CR 614.1a: the countered-spell redirect clause shape
+/// "put it <destination> instead of into <that player's|its owner's|their owner's> graveyard".
+/// The destinations are exactly those modelled by
+/// `SpellStackToGraveyardReplacement::{Library, Hand}` (Memory Lapse / Lapse of Certainty:
+/// top of library; Spell Crumple: bottom of library; Remand: hand).
+fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
+    use nom::branch::alt;
+    use nom::bytes::complete::tag;
+    use nom::combinator::value;
+    use nom::Parser;
+
+    let (rest, _) = tag("put it ").parse(input)?;
+    let (rest, _) = alt((
+        tag("on top of its owner's library"),
+        tag("on the bottom of its owner's library"),
+        tag("into its owner's hand"),
+    ))
+    .parse(rest)?;
+    let (rest, _) = tag(" instead of into ").parse(rest)?;
+    let (rest, _) = alt((
+        tag("that player's"),
+        tag("its owner's"),
+        tag("their owner's"),
+    ))
+    .parse(rest)?;
+    value((), tag(" graveyard")).parse(rest)
+}
+
 /// CR 701.6a + CR 614.1a: true when the typed countered-spell redirect accounts for
 /// EVERY " instead" sentence of the unit. The redirect slot carries no sentence-level
 /// provenance, so a second, unmodelled " instead" sentence must keep the warning:
-/// the discharge requires each such sentence to be the redirect clause itself
-/// ("... countered this way ... instead of into that player's graveyard").
+/// the discharge requires each such sentence to BE the redirect clause itself
+/// (`parse_countered_spell_redirect_shape`), not merely to mention "countered this way".
 fn countered_spell_zone_redirect_is_only_instead_marker(
     cleaned: &str,
     parsed: &ParsedAbilities,
 ) -> bool {
-    use crate::parser::oracle_nom::primitives::{scan_contains, split_sentence_units};
+    use crate::parser::oracle_nom::primitives::{
+        scan_at_word_boundaries, scan_contains, split_sentence_units,
+    };
     any_ability_has_countered_spell_zone_redirect(parsed)
         && split_sentence_units(cleaned)
             .into_iter()
             .filter(|sentence| scan_contains(sentence, "instead"))
-            .all(|sentence| scan_contains(sentence, "countered this way"))
+            .all(|sentence| {
+                scan_contains(sentence, "countered this way")
+                    && scan_at_word_boundaries(sentence, parse_countered_spell_redirect_shape)
+                        .is_some()
+            })
 }
 
 // ── Detector A: Replacement_Instead ─────────────────────────────────────
@@ -8450,6 +8490,26 @@ If you sang a song the whole time you were searching and shuffling, you may unta
         );
         assert!(has_swallowed_detector(
             &second_instead,
+            "Replacement_Instead"
+        ));
+
+        // Hostile: the extra sentence mentions "countered this way" but is a different
+        // " instead" clause, not the redirect shape -> must still warn.
+        let second_countered_instead = parse_named(
+            &format!(
+                "{memory_lapse_text} If it was countered this way, you gain 2 life instead of \
+                 drawing a card."
+            ),
+            "Memory Lapse",
+            &["Instant"],
+        );
+        assert!(no_unimplemented(&second_countered_instead));
+        assert!(
+            matches!(counter_zone(&second_countered_instead), Some(Some(_))),
+            "second-countered-instead fixture: expected Counter with countered_spell_zone"
+        );
+        assert!(has_swallowed_detector(
+            &second_countered_instead,
             "Replacement_Instead"
         ));
     }
