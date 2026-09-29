@@ -74321,6 +74321,65 @@ fn shared_equal_to_quantity_declines_previous_effect_look_back() {
     }
 }
 
+/// CR 608.2c + CR 608.2h: "the number of cards a player discarded this way"
+/// lowers to the unfiltered chain `TrackedSetSize`. A conjunct's zone changes
+/// (Mill) extend that tracked set, so cloning it into a chained Draw would read
+/// the discard PLUS the mill. The distributor must decline; the clause stays
+/// Unimplemented. Reach-guard: the single-verb form reads `TrackedSetSize`,
+/// and the same Mill -> Draw shape with a non-look-back quantity distributes.
+#[test]
+fn shared_equal_to_quantity_declines_tracked_set_look_back() {
+    let reads_tracked_set = |effect: &Effect| {
+        let mut hit = false;
+        effect.for_each_quantity_expr(&mut |qty| {
+            hit |= qty.any_ref(&mut |r| {
+                matches!(
+                    r,
+                    QuantityRef::TrackedSetSize | QuantityRef::FilteredTrackedSetSize { .. }
+                )
+            });
+        });
+        hit
+    };
+
+    let single = parse_effect_chain(
+        "You mill cards equal to the number of cards a player discarded this way.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        shared_equal_to_chain_effects(&single)
+            .iter()
+            .any(reads_tracked_set),
+        "reach-guard: the phrase lowers to a tracked-set quantity, got {single:?}"
+    );
+    let positive = parse_effect_chain(
+        "You mill cards and draw cards equal to its power.",
+        AbilityKind::Spell,
+    );
+    assert_eq!(
+        shared_equal_to_chain_effects(&positive).len(),
+        2,
+        "reach-guard: non-look-back shared quantity distributes"
+    );
+    assert_eq!(chain_unimplemented_count(&positive), 0, "reach-guard");
+
+    let text = "You discard three cards. You mill cards and draw cards equal to the number of cards a player discarded this way.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let effects = shared_equal_to_chain_effects(&def);
+    assert!(
+        !effects.windows(2).any(|pair| matches!(
+            pair,
+            [mill @ Effect::Mill { .. }, draw @ Effect::Draw { .. }]
+                if reads_tracked_set(mill) && reads_tracked_set(draw)
+        )),
+        "must not chain Mill -> Draw sharing a tracked-set quantity, got {effects:?}"
+    );
+    assert!(
+        chain_has_unimplemented(&def),
+        "declined compound stays Unimplemented, got {def:?}"
+    );
+}
+
 /// T6: Blim's third-person, subject-scoped "each player loses life and
 /// discards cards equal to …" is deferred and keeps its `Unimplemented`
 /// (paired positive: T1 on Lifeblood Hydra).

@@ -13276,24 +13276,145 @@ fn parse_equal_to_quantity_tail(rest_lower: &str) -> Option<QuantityExpr> {
         .or_else(|| super::oracle_quantity::parse_cda_quantity(rest))
 }
 
-/// CR 608.2c + CR 608.2h: True when a shared "equal to" quantity reads the
-/// resolution-local result of the preceding instruction — `PreviousEffectAmount`
-/// / `PreviousEffectCount`, or `EventContextAmount`, whose runtime cascade
-/// falls back to `last_effect_count` / `last_effect_amount`. CR 608.2h fixes
-/// that result once, when the referenced effect is applied; every conjunct of
-/// a shared-tail compound re-stamps it as it resolves, so a chained conjunct
-/// would read its predecessor conjunct's fixed result instead of the
-/// instruction the text refers to (Eventide's Shadow: "… equal to the number
-/// of counters removed this way").
-fn quantity_reads_previous_effect_result(qty: &QuantityExpr) -> bool {
-    qty.any_ref(&mut |reference| {
-        matches!(
-            reference,
-            QuantityRef::PreviousEffectAmount { .. }
-                | QuantityRef::PreviousEffectCount
-                | QuantityRef::EventContextAmount
-        )
-    })
+/// CR 608.2c + CR 608.2h: True when a shared "equal to" quantity reads a
+/// resolution-local result that an earlier conjunct of the same chain can
+/// re-stamp or extend, so cloning it into each conjunct would make a later
+/// conjunct read its predecessor's effect instead of the instruction the text
+/// refers to. CR 608.2h fixes such an answer once, when the referenced effect
+/// is applied.
+///
+/// Two families are declined:
+/// - the previous-effect result — `PreviousEffectAmount` / `PreviousEffectCount`,
+///   or `EventContextAmount`, whose runtime cascade falls back to
+///   `last_effect_count` / `last_effect_amount` — which every conjunct
+///   re-stamps as it resolves (Eventide's Shadow: "… equal to the number of
+///   counters removed this way");
+/// - the chain tracked set — `TrackedSetSize`, `FilteredTrackedSetSize`, and
+///   `PropertyAggregate` / `DistinctCardTypes` / `DistinctSubtypes` over a
+///   chain-set `CardTypeSetSource::TrackedSet` — which the zone changes of a
+///   conjunct (e.g. Mill) extend, so "the number of cards a player discarded
+///   this way" would grow between conjuncts.
+///
+/// Every other reference reads live game state, a turn journal, a cast-time
+/// record, or a fixed antecedent that the four shared-tail verbs
+/// (mill / draw / gain life / lose life) cannot re-stamp; each conjunct
+/// determines those when it is applied (CR 608.2h).
+fn quantity_reads_chain_local_result(qty: &QuantityExpr) -> bool {
+    qty.any_ref(&mut quantity_ref_reads_chain_local_result)
+}
+
+/// Leaf classifier for [`quantity_reads_chain_local_result`]. The match is
+/// exhaustive on purpose: a new `QuantityRef` variant must be classified here
+/// as chain-local (decline) or not (distribute) before the crate compiles.
+fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
+    // A union that cannot be fully walked is treated as chain-local (decline).
+    let source_reads_chain_set = |source: &CardTypeSetSource| {
+        let mut chain_set = false;
+        let complete =
+            source.try_for_each_member(crate::types::ability::UNION_DEPTH_BUDGET, &mut |leaf| {
+                chain_set |= matches!(
+                    leaf,
+                    CardTypeSetSource::TrackedSet {
+                        set: TrackedAnaphorSource::ChainSet,
+                        ..
+                    }
+                );
+            });
+        chain_set || !complete
+    };
+    match reference {
+        QuantityRef::PreviousEffectAmount { .. }
+        | QuantityRef::PreviousEffectCount
+        | QuantityRef::EventContextAmount
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::FilteredTrackedSetSize { .. } => true,
+        QuantityRef::PropertyAggregate(aggregate) => source_reads_chain_set(aggregate.source()),
+        QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::DistinctSubtypes { source, .. } => source_reads_chain_set(source),
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal { .. }
+        | QuantityRef::TriggeringDiscoverValue
+        | QuantityRef::TriggeringScryLookCount
+        | QuantityRef::TriggeringScryBottomCount
+        | QuantityRef::ObjectCount { .. }
+        | QuantityRef::ObjectCountDistinct { .. }
+        | QuantityRef::ObjectCountBySharedQuality { .. }
+        | QuantityRef::PlayerCount { .. }
+        | QuantityRef::CountersOn { .. }
+        | QuantityRef::CountersOnObjects { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::TargetControllerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::BasePower { .. }
+        | QuantityRef::Intensity { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::TargetObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::ControlledByEachPlayer { .. }
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ExiledCardPower { .. }
+        | QuantityRef::ZoneCardCount { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::UnspentMana { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::EventContextPlayerCount { .. }
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::EventContextSourceModesChosen
+        | QuantityRef::SpellsCastThisTurn { .. }
+        | QuantityRef::SpellsCastBeforeTriggeringSpell { .. }
+        | QuantityRef::EnteredThisTurn { .. }
+        | QuantityRef::SacrificedThisTurn { .. }
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::BattlefieldEntriesThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ZoneChangeCountThisTurn { .. }
+        | QuantityRef::ZoneChangeAggregateThisTurn { .. }
+        | QuantityRef::DamageDealtThisTurn { .. }
+        | QuantityRef::ChosenNumber
+        | QuantityRef::PlayerChosenNumber { .. }
+        | QuantityRef::AttackedThisTurn { .. }
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::SpellsCastThisGame { .. }
+        | QuantityRef::CounterAddedThisTurn { .. }
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::TokensCreatedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
+        | QuantityRef::ManaSpentToCast { .. }
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount
+        | QuantityRef::CommanderManaValue { .. }
+        | QuantityRef::DistinctColorsAmong { .. }
+        | QuantityRef::DistinctCounterKindsAmong { .. }
+        | QuantityRef::VoteCount { .. } => false,
+    }
 }
 
 /// Parse "{verb} cards equal to {quantity_ref}" patterns (CR 121.1 + CR 701.17a).
@@ -22198,10 +22319,11 @@ fn try_parse_shared_equal_to_quantity_compound(tp: TextPair) -> Option<ParsedEff
     .parse(tp.lower)
     .ok()?;
     let qty = parse_equal_to_quantity_tail(rest_lower)?;
-    // CR 608.2c: a look-back at the preceding instruction's result cannot be
-    // shared — each conjunct would re-stamp it for the next. Decline so the
-    // clause stays honestly unimplemented.
-    if quantity_reads_previous_effect_result(&qty) {
+    // CR 608.2c + CR 608.2h: a look-back at the preceding instruction's result
+    // or at the chain tracked set cannot be shared — a conjunct would re-stamp
+    // or extend it for the next. Decline so the clause stays honestly
+    // unimplemented.
+    if quantity_reads_chain_local_result(&qty) {
         return None;
     }
     // The only admitted subject is "you" (`parse_equal_to_qty_conjuncts`),
