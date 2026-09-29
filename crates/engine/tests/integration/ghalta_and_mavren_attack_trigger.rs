@@ -107,7 +107,7 @@ fn mode1_dinosaur_token_power_excludes_ghalta_and_enters_attacking() {
         Some(7),
         "X/X token: toughness must equal power"
     );
-    assert!(token.tapped, "CR 508.4: the token must enter tapped");
+    assert!(token.tapped, "Oracle text: the token must enter tapped");
     assert!(
         state
             .combat
@@ -153,6 +153,16 @@ fn mode2_vampire_token_count_excludes_ghalta() {
         assert!(
             !v.tapped,
             "mode 2 tokens are not stated to enter tapped or attacking"
+        );
+        assert!(
+            !state
+                .combat
+                .as_ref()
+                .expect("combat is active")
+                .attackers
+                .iter()
+                .any(|attacker| attacker.object_id == v.id),
+            "mode 2 tokens must not enter attacking"
         );
     }
 }
