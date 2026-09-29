@@ -652,9 +652,9 @@ fn parse_token_description_with_context(
     loop {
         let trimmed = rest.trim_start();
         let trimmed_lower = trimmed.to_lowercase();
-        // CR 508.4: a token created already declared as an attacker, via the
-        // LEADING-modifier surface form ("Create a tapped and attacking X/X
-        // green Dinosaur creature token...", Ghalta and Mavren / Pugnacious
+        // CR 508.4: a token created attacking, never declared as an attacker,
+        // via the LEADING-modifier surface form ("Create a tapped and attacking
+        // X/X green Dinosaur creature token...", Ghalta and Mavren / Pugnacious
         // Pugilist / Maestros Diabolist) as opposed to the TRAILING "...that's
         // tapped and attacking" form the `entry_clause` combinator above already
         // handles. Mirrors `parse_copy_token_entry_modifiers`'s leading 3-way
