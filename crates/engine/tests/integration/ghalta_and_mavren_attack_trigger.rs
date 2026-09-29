@@ -5,9 +5,8 @@
 //! so the attack trigger fires from a genuine attack declaration, then drives
 //! the modal choice to resolution for both modes.
 //!
-//! CR 508.1i (whenever-you-attack triggers) + CR 508.4 (tokens created already
-//! attacking) + CR 608.2c ("other" / present-tense quantity binding) +
-//! CR 700.2b (modal choice).
+//! CR 508.3d (whenever-you-attack triggers) + CR 508.4 (tokens created already
+//! attacking) + CR 700.2b (modal choice).
 
 use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
