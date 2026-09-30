@@ -43510,36 +43510,73 @@ fn merge_counter_unless_cost_riders(text: &str, chunks: Vec<ClauseChunk>) -> Vec
             Some(ClauseBoundary::Comma | ClauseBoundary::Then)
         );
         let carries_unless_cost = splits_same_sentence
-            && tag::<_, _, OracleError<'_>>("counter ")
-                .parse(head_lower.as_str())
-                .is_ok()
+            && is_counter_spell_clause(&head_lower)
             && parse_unless_payment(&head_lower).is_some();
-        let Some(start) = head_start.filter(|_| carries_unless_cost) else {
+        if !carries_unless_cost {
             merged.push(head);
             continue;
-        };
-        let mut boundary_after = head.boundary_after;
+        }
+        // Fail closed: when a chunk cannot be located in the printed text
+        // (synthesized chunks), the merged text is the chunk texts joined by
+        // their boundary separators. Any same-sentence continuation makes the
+        // compound cost unparsable, so the sentence is refused either way.
+        let mut span_start = head_start;
         let mut end = cursor;
+        let mut joined = head.text.clone();
+        let mut boundary_after = head.boundary_after;
         while matches!(
             boundary_after,
             Some(ClauseBoundary::Comma | ClauseBoundary::Then)
         ) {
-            let Some(next) = iter.peek() else { break };
-            let Some(next_start) = locate_chunk_start(text, end, &next.text) else {
-                break;
+            let Some(next) = iter.next() else { break };
+            let separator = if boundary_after == Some(ClauseBoundary::Then) {
+                ", then "
+            } else {
+                ", "
             };
-            end = next_start + next.text.len();
+            joined.push_str(separator);
+            joined.push_str(&next.text);
+            match span_start.and(locate_chunk_start(text, end, &next.text)) {
+                Some(next_start) => end = next_start + next.text.len(),
+                None => span_start = None,
+            }
             boundary_after = next.boundary_after;
-            iter.next();
         }
         cursor = end;
         merged.push(ClauseChunk {
-            text: text[start..end].to_string(),
+            text: span_start.map_or(joined, |start| text[start..end].to_string()),
             boundary_after,
             leading_duration: head.leading_duration,
         });
     }
     merged
+}
+
+/// A counter-spell clause (verb "counter" + its object), at any word boundary so
+/// leading prefixes ("if you do, counter ...", "then counter ...", "you may
+/// counter ...") are covered. The noun ("a +1/+1 counter on ...") never matches:
+/// the verb must be followed by a spell/ability object determiner.
+fn is_counter_spell_clause(lower: &str) -> bool {
+    nom_primitives::scan_at_word_boundaries(lower, |i| {
+        value(
+            (),
+            (
+                tag("counter "),
+                alt((
+                    tag("target "),
+                    tag("that "),
+                    tag("it "),
+                    tag("the "),
+                    tag("this "),
+                    tag("each "),
+                    tag("all "),
+                    tag("up to "),
+                )),
+            ),
+        )
+        .parse(i)
+    })
+    .is_some()
 }
 
 /// Byte offset of `chunk_text` in `text` at or after `from`, via `take_until`.

@@ -7997,6 +7997,93 @@ fn effect_counter_unless_discards_hand_rider_is_never_dropped() {
     ));
 }
 
+/// The merge anchor is the counter-spell clause anywhere in the head chunk, not
+/// a "counter " prefix: prefixed forms must not leave the rider detached as a
+/// caster-scoped sub-ability of a "supported" Counter.
+#[test]
+fn effect_counter_unless_rider_merge_covers_prefixed_counter_heads() {
+    for text in [
+        "If you do, counter target spell unless its controller discards their hand and draws a card.",
+        "Then counter target spell unless its controller discards their hand and draws a card.",
+        "You may counter target spell unless its controller discards their hand, then sacrifices a creature.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let mut cur = Some(&def);
+        while let Some(d) = cur {
+            assert!(
+                !matches!(&*d.effect, Effect::Draw { .. } | Effect::Sacrifice { .. }),
+                "{text:?} must not detach the rider as a sub-ability, got {:?}",
+                d.effect
+            );
+            cur = d.sub_ability.as_deref();
+        }
+        assert!(
+            !(matches!(*def.effect, Effect::Counter { .. }) && def.unless_pay.is_some()),
+            "{text:?} must not be a supported Counter+unless_pay, got {:?}",
+            def.effect
+        );
+    }
+}
+
+/// The counter-clause predicate matches the verb+object only, never the noun.
+#[test]
+fn counter_spell_clause_predicate_rejects_the_noun() {
+    for yes in [
+        "counter target spell unless its controller pays {2}",
+        "if you do, counter target spell unless",
+        "you may counter that spell unless",
+    ] {
+        assert!(is_counter_spell_clause(yes), "{yes}");
+    }
+    for no in [
+        "put a +1/+1 counter on target creature unless its controller pays {2}",
+        "remove a counter from it unless you pay {1}",
+        "that player gets two poison counters unless",
+    ] {
+        assert!(!is_counter_spell_clause(no), "{no}");
+    }
+    // Noun-"counter" sentence with a rider stays untouched (split, Draw sub-ability).
+    let def = parse_effect_chain(
+        "Put a +1/+1 counter on target creature, then draw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        matches!(*def.effect, Effect::PutCounter { .. }),
+        "{:?}",
+        def.effect
+    );
+    assert!(matches!(
+        def.sub_ability.as_deref().map(|s| &*s.effect),
+        Some(Effect::Draw { .. })
+    ));
+}
+
+/// Fail closed: a counter+unless head whose chunks cannot be located in the
+/// printed text (synthesized chunks) is still merged with its continuation, so
+/// the compound cost is refused rather than partially lowered.
+#[test]
+fn counter_unless_rider_merge_fails_closed_on_unlocatable_chunks() {
+    let chunks = vec![
+        ClauseChunk {
+            text: "counter target spell unless its controller discards their hand".to_string(),
+            boundary_after: Some(ClauseBoundary::Comma),
+            leading_duration: None,
+        },
+        ClauseChunk {
+            text: "draws a card.".to_string(),
+            boundary_after: None,
+            leading_duration: None,
+        },
+    ];
+    let merged = merge_counter_unless_cost_riders("unrelated printed text", chunks);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(
+        merged[0].text,
+        "counter target spell unless its controller discards their hand, draws a card."
+    );
+    assert!(parse_unless_payment(&merged[0].text).is_none());
+}
+
 /// The rider merge only fires for a same-sentence detached clause; every real
 /// counter-unless card in the corpus keeps its Counter + unless_pay parse.
 #[test]
