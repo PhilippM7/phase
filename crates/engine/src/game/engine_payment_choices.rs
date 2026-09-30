@@ -1296,9 +1296,10 @@ pub(super) fn handle_unless_payment(
                 if (hand_cards.len() as u32) < count {
                     payment_failed = true;
                 } else if count == 0 {
-                    // Deliberately class-wide for every Discard unless-cost (CR 118.3).
-                    // CR 118.3: a resolved count of zero (a whole-hand discard
-                    // with an empty hand) requires no resource, so the cost is
+                    // Deliberately class-wide for every Discard unless-cost: a
+                    // resolved count of zero (a whole-hand discard with an empty
+                    // hand, per the Perplex 2005-10-01 ruling) needs no resource
+                    // to discard (cf. CR 118.3), so the cost is
                     // paid with nothing to discard. Falls through to the paid
                     // path; prompting `WardDiscardChoice` with no cards would
                     // soft-lock the payer.
