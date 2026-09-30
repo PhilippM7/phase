@@ -1296,6 +1296,7 @@ pub(super) fn handle_unless_payment(
                 if (hand_cards.len() as u32) < count {
                     payment_failed = true;
                 } else if count == 0 {
+                    // Deliberately class-wide for every Discard unless-cost (CR 118.3).
                     // CR 118.3: a resolved count of zero (a whole-hand discard
                     // with an empty hand) requires no resource, so the cost is
                     // paid with nothing to discard. Falls through to the paid

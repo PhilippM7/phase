@@ -7955,22 +7955,66 @@ fn effect_counter_unless_discards_hand_hostile_sentences_stay_unimplemented() {
     }
 }
 
-/// The clause splitter (upstream of the unless-cost grammar, shared by every
-/// unless-cost) detaches a trailing conjoined/`then` clause into a following
-/// sub-ability, so the whole-hand arm sees only "... discards their hand".
-/// The rider must never be dropped: it is either kept as a sub-ability or the
-/// whole sentence stays Unimplemented.
+/// The clause splitter (shared by every unless-cost) detaches a same-sentence
+/// conjoined / `then` rider from a Counter clause. The payer's cost and the rider
+/// are one sentence, so the rider must never become a caster-scoped sub-ability
+/// of a "supported" Counter: the whole sentence stays `unless_payment`
+/// Unimplemented. A period starts an independent instruction and stays split.
 #[test]
 fn effect_counter_unless_discards_hand_rider_is_never_dropped() {
     for text in [
         "Counter target spell unless its controller discards their hand and draws a card.",
         "Counter target spell unless its controller discards their hand, then sacrifices a creature.",
+        "Counter target spell unless its controller discards a card and draws a card.",
     ] {
         let def = parse_effect_chain(text, AbilityKind::Spell);
         assert!(
-            matches!(*def.effect, Effect::Unimplemented { .. }) || def.sub_ability.is_some(),
-            "{text:?} dropped its rider: {:?} / {:?}",
+            matches!(
+                &*def.effect,
+                Effect::Unimplemented { name, .. } if name == "unless_payment"
+            ) && def.sub_ability.is_none() && def.unless_pay.is_none(),
+            "{text:?} must be whole-sentence unless_payment Unimplemented, got {:?} / {:?} / sub {:?}",
             def.effect,
+            def.unless_pay,
+            def.sub_ability
+        );
+    }
+
+    // Paired positive: a period-separated second sentence is an independent
+    // caster instruction, so the unless-cost parses and Draw is a sub-effect.
+    let def = parse_effect_chain(
+        "Counter target spell unless its controller discards their hand. Draw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(*def.effect, Effect::Counter { .. }));
+    assert_eq!(
+        def.unless_pay.expect("unless_pay").cost,
+        whole_hand_discard_cost()
+    );
+    assert!(matches!(
+        def.sub_ability.as_deref().map(|s| &*s.effect),
+        Some(Effect::Draw { .. })
+    ));
+}
+
+/// The rider merge only fires for a same-sentence detached clause; every real
+/// counter-unless card in the corpus keeps its Counter + unless_pay parse.
+#[test]
+fn effect_counter_unless_rider_merge_preserves_real_cards() {
+    for text in [
+        "Counter target spell unless its controller pays {1} and 1 life.",
+        "Counter target spell unless its controller pays {X}, where X is its mana value.",
+        "Counter target spell unless its controller pays {X}, where X is your devotion to blue.",
+        "Counter target instant or sorcery spell unless its controller pays {X}, where X is this creature's power.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(*def.effect, Effect::Counter { .. })
+                && def.unless_pay.is_some()
+                && def.sub_ability.is_none(),
+            "{text:?} changed: {:?} / {:?} / {:?}",
+            def.effect,
+            def.unless_pay,
             def.sub_ability
         );
     }

@@ -38181,10 +38181,12 @@ pub(crate) fn parse_effect_chain_ir(
     let (chain_zada_distinct_copy_targets, text) =
         lower::strip_each_copy_targets_distinct_member_suffix(text);
     let text = text.as_str();
-    let chunks =
+    let chunks = merge_counter_unless_cost_riders(
+        text,
         sequence::split_subject_elided_control_continuations(split_clause_sequence(text), |head| {
             head_carries_player_subject(head, ctx)
-        });
+        }),
+    );
     // CR 611.2a + CR 608.2c: expand any chunk whose leading duration governs conjuncts the
     // single-clause parse discarded. The expanded conjuncts become ORDINARY chunks of THIS
     // chain, which is the only construction under which chain-level anaphor state
@@ -43479,6 +43481,71 @@ fn parse_counter_unless_pays_subject(input: &str) -> OracleResult<'_, &str> {
         ),
     ))
     .parse(input)
+}
+
+/// CR 118.12 + CR 608.2c: A counter spell's "unless [payer] <cost>" tail belongs
+/// to the payer ("its controller"), not the caster. When the clause splitter
+/// detaches a same-sentence continuation (" and draws a card", ", then
+/// sacrifices a creature") from a Counter clause whose unless-cost parsed, the
+/// detached clause would resolve as an independent caster-scoped sub-ability
+/// while the payer's cost silently lost half its text. Rejoin the whole
+/// sentence into one chunk so `parse_unless_payment` sees (and refuses) the
+/// compound cost and the chain stays an honest `unless_payment` Unimplemented.
+/// Period-separated sentences are independent instructions and stay split.
+fn merge_counter_unless_cost_riders(text: &str, chunks: Vec<ClauseChunk>) -> Vec<ClauseChunk> {
+    let mut merged: Vec<ClauseChunk> = Vec::with_capacity(chunks.len());
+    let mut iter = chunks.into_iter().peekable();
+    // Byte offset in `text` past the last chunk consumed; chunk texts are
+    // contiguous, in-order substrings of the printed text.
+    let mut cursor = 0usize;
+    while let Some(head) = iter.next() {
+        let head_start = locate_chunk_start(text, cursor, &head.text);
+        cursor = head_start.map_or(cursor, |start| start + head.text.len());
+        let head_lower = head.text.to_ascii_lowercase();
+        let splits_same_sentence = matches!(
+            head.boundary_after,
+            Some(ClauseBoundary::Comma | ClauseBoundary::Then)
+        );
+        let carries_unless_cost = splits_same_sentence
+            && tag::<_, _, OracleError<'_>>("counter ")
+                .parse(head_lower.as_str())
+                .is_ok()
+            && parse_unless_payment(&head_lower).is_some();
+        let Some(start) = head_start.filter(|_| carries_unless_cost) else {
+            merged.push(head);
+            continue;
+        };
+        let mut boundary_after = head.boundary_after;
+        let mut end = cursor;
+        while matches!(
+            boundary_after,
+            Some(ClauseBoundary::Comma | ClauseBoundary::Then)
+        ) {
+            let Some(next) = iter.peek() else { break };
+            let Some(next_start) = locate_chunk_start(text, end, &next.text) else {
+                break;
+            };
+            end = next_start + next.text.len();
+            boundary_after = next.boundary_after;
+            iter.next();
+        }
+        cursor = end;
+        merged.push(ClauseChunk {
+            text: text[start..end].to_string(),
+            boundary_after,
+            leading_duration: head.leading_duration,
+        });
+    }
+    merged
+}
+
+/// Byte offset of `chunk_text` in `text` at or after `from`, via `take_until`.
+fn locate_chunk_start(text: &str, from: usize, chunk_text: &str) -> Option<usize> {
+    let tail = text.get(from..)?;
+    let (_, skipped) = take_until::<_, _, OracleError<'_>>(chunk_text)
+        .parse(tail)
+        .ok()?;
+    Some(from + skipped.len())
 }
 
 /// CR 118.12a + CR 701.9a + CR 109.4: "unless its controller discards their
