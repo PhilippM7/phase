@@ -1295,6 +1295,12 @@ pub(super) fn handle_unless_payment(
                 // the effect happens.
                 if (hand_cards.len() as u32) < count {
                     payment_failed = true;
+                } else if count == 0 {
+                    // CR 118.3: a resolved count of zero (a whole-hand discard
+                    // with an empty hand) requires no resource, so the cost is
+                    // paid with nothing to discard. Falls through to the paid
+                    // path; prompting `WardDiscardChoice` with no cards would
+                    // soft-lock the payer.
                 } else if selection.is_random() {
                     // CR 701.9b: a RANDOM discard offers the payer no choice —
                     // the game picks. Pay it inline through the shared

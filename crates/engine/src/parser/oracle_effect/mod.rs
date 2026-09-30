@@ -43304,9 +43304,16 @@ pub(super) fn counter_unless_pay_modifier(cost: AbilityCost) -> UnlessPayModifie
 pub(super) fn parse_unless_payment(lower: &str) -> Option<AbilityCost> {
     // Find "unless" followed by a subject ("its controller", "that player", …).
     let after_unless = strip_after(lower, "unless ")?;
-    // CR 117.3: the mana / energy / {X} forms require the "pays " verb. Try
-    // them first so existing behavior is preserved exactly for mana costs.
-    if let Some(cost_str) = strip_after(after_unless, "pays ") {
+    // CR 118.12: the mana / energy / {X} forms require "[subject] pays ". The
+    // gate is anchored at the start of the tail so a mixed sentence ("discards
+    // their hand or pays {2}") is never swallowed as a bare `Counter unless {2}`.
+    // Try them first so existing behavior is preserved exactly for mana costs.
+    if let Ok((cost_str, _)) = preceded(
+        parse_counter_unless_pays_subject,
+        tag::<_, _, OracleError<'_>>("pays "),
+    )
+    .parse(after_unless)
+    {
         if let Some(cost) = parse_unless_mana_or_energy_payment(cost_str) {
             return Some(cost);
         }
@@ -43326,6 +43333,11 @@ pub(super) fn parse_unless_payment(lower: &str) -> Option<AbilityCost> {
     // (Decoy Gambit) — the controller may have the spell's controller draw
     // instead of the primary effect.
     if let Some(cost) = parse_unless_have_you_draw_cost(after_unless) {
+        return Some(cost);
+    }
+    // CR 118.12a + CR 701.9a + CR 109.4: "unless its controller discards their
+    // hand" (Perplex) — whole-hand discard by the targeted spell's controller.
+    if let Some(cost) = parse_unless_discard_hand_cost(after_unless) {
         return Some(cost);
     }
     // CR 118.12 / CR 119.4 / CR 608.2c: non-mana alternative costs — "pays N
@@ -43438,16 +43450,70 @@ fn is_discard_unless_you_discard_filter(before_unless: &str, after_unless: &str)
 /// discard (and `or`-disjunctions) without duplicating the verb dispatch here.
 /// Returns `None` when no recognized subject is present.
 fn normalize_counter_unless_subject(after_unless: &str) -> Option<String> {
-    let (rest, _) = alt((
-        tag::<_, _, OracleError<'_>>("its controller "),
+    let (rest, _) = parse_counter_unless_subject(after_unless).ok()?;
+    Some(format!("they {rest}"))
+}
+
+/// CR 118.12 + CR 109.4: The payer subject of a counter spell's non-mana
+/// "unless" cost — the single owner of this subject axis.
+fn parse_counter_unless_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        tag("its controller "),
         tag("their controller "),
         tag("that player "),
         tag("that opponent "),
         tag("they "),
     ))
-    .parse(after_unless)
+    .parse(input)
+}
+
+/// CR 118.12 + CR 109.4: Subjects accepted before "pays " in a counter spell's
+/// mana / energy unless-cost: the non-mana subject set plus the possessive
+/// controller forms ("that spell's controller", "that ability's controller").
+fn parse_counter_unless_pays_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        parse_counter_unless_subject,
+        preceded(
+            alt((tag("that spell's"), tag("that ability's"))),
+            tag(" controller "),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 118.12a + CR 701.9a + CR 109.4: "unless its controller discards their
+/// hand" (Perplex) — the targeted spell's controller may discard their whole
+/// hand instead of having the spell countered. The count is the hand size of
+/// the resolving ability's first object target's controller, read when the cost
+/// is paid. Anchored at both ends: only an optional period may follow "hand".
+/// "your hand" is refused: a non-controller payer cannot discard the caster's hand.
+fn parse_unless_discard_hand_cost(after_unless: &str) -> Option<AbilityCost> {
+    all_consuming(terminated(
+        (
+            parse_counter_unless_subject,
+            alt((tag("discards "), tag("discard "))),
+            opt(alt((
+                tag("all the cards in "),
+                tag("all of the cards in "),
+                tag("all cards in "),
+            ))),
+            alt((tag("their"), tag("his or her"))),
+            tag(" hand"),
+        ),
+        opt(tag(".")),
+    ))
+    .parse(after_unless.trim())
     .ok()?;
-    Some(format!("they {rest}"))
+    Some(AbilityCost::Discard {
+        count: QuantityExpr::Ref {
+            qty: QuantityRef::HandSize {
+                player: PlayerScope::ParentObjectTargetController,
+            },
+        },
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+        self_scope: crate::types::ability::DiscardSelfScope::FromHand,
+    })
 }
 
 /// CR 118.12a: Tail of "deal N damage to them" unless-cost alternatives.

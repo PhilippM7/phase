@@ -7875,6 +7875,151 @@ fn effect_counter_unless_parses_non_mana_costs() {
     );
 }
 
+/// Assert a counter clause parsed to a whole-sentence `Effect::Unimplemented`
+/// (never a partial `Counter` with a wrong or absent `unless_pay`).
+fn assert_counter_unless_stays_unimplemented(text: &str) {
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        matches!(*def.effect, Effect::Unimplemented { .. }),
+        "{text:?} must stay whole-sentence Unimplemented, got {:?} / {:?} / sub {:?}",
+        def.effect,
+        def.unless_pay,
+        def.sub_ability
+    );
+}
+
+fn counter_unless_cost(text: &str) -> AbilityCost {
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        matches!(*def.effect, Effect::Counter { .. }),
+        "{text:?} must parse to Counter, got {:?}",
+        def.effect
+    );
+    let unless_pay = def
+        .unless_pay
+        .unwrap_or_else(|| panic!("{text:?} must carry unless_pay"));
+    assert_eq!(unless_pay.payer, TargetFilter::ParentTargetController);
+    unless_pay.cost
+}
+
+fn whole_hand_discard_cost() -> AbilityCost {
+    AbilityCost::Discard {
+        count: QuantityExpr::Ref {
+            qty: QuantityRef::HandSize {
+                player: PlayerScope::ParentObjectTargetController,
+            },
+        },
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+        self_scope: crate::types::ability::DiscardSelfScope::FromHand,
+    }
+}
+
+/// CR 118.12a + CR 701.9a + CR 109.4: Perplex — whole-hand unless-discard.
+#[test]
+fn effect_counter_unless_discards_their_hand() {
+    for text in [
+        "Counter target spell unless its controller discards their hand.",
+        "Counter target spell unless its controller discards their hand",
+        "Counter target spell unless its controller discards all the cards in their hand.",
+        "Counter target spell unless its controller discards his or her hand.",
+        "Counter target spell unless that player discards their hand.",
+        "Counter target spell unless they discard their hand.",
+    ] {
+        assert_eq!(
+            counter_unless_cost(text),
+            whole_hand_discard_cost(),
+            "{text}"
+        );
+    }
+}
+
+/// Hostile sentences around the whole-hand arm must stay fully red.
+#[test]
+fn effect_counter_unless_discards_hand_hostile_sentences_stay_unimplemented() {
+    // Positive reach-guard: the arm is live for the well-formed sentence.
+    assert_eq!(
+        counter_unless_cost("Counter target spell unless its controller discards their hand."),
+        whole_hand_discard_cost()
+    );
+    for text in [
+        "Counter target spell unless its controller discards your hand.",
+        "Counter target spell unless its controller discards their handful.",
+        "Counter target spell unless its controller discards their hand or pays {2}.",
+        "Counter target spell unless its controller discards their hand and pays {2}.",
+        "Counter target spell unless its controller discards their.",
+        "Counter target spell unless its controller discards hand.",
+        "Counter target spell unless its controller discards a card and pays {2}.",
+    ] {
+        assert_counter_unless_stays_unimplemented(text);
+    }
+}
+
+/// The clause splitter (upstream of the unless-cost grammar, shared by every
+/// unless-cost) detaches a trailing conjoined/`then` clause into a following
+/// sub-ability, so the whole-hand arm sees only "... discards their hand".
+/// The rider must never be dropped: it is either kept as a sub-ability or the
+/// whole sentence stays Unimplemented.
+#[test]
+fn effect_counter_unless_discards_hand_rider_is_never_dropped() {
+    for text in [
+        "Counter target spell unless its controller discards their hand and draws a card.",
+        "Counter target spell unless its controller discards their hand, then sacrifices a creature.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(*def.effect, Effect::Unimplemented { .. }) || def.sub_ability.is_some(),
+            "{text:?} dropped its rider: {:?} / {:?}",
+            def.effect,
+            def.sub_ability
+        );
+    }
+}
+
+/// The "pays " gate is anchored to the payer subject: every currently
+/// supported mana / energy / life subject form still parses.
+#[test]
+fn effect_counter_unless_pays_gate_keeps_supported_subjects() {
+    for text in [
+        "Counter target spell unless its controller pays {2}.",
+        "Counter target spell unless that player pays {1}.",
+        "Counter target spell unless that spell's controller pays {B} or {3}.",
+        "Counter target spell unless its controller pays {X}.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(*def.effect, Effect::Counter { .. }) && def.unless_pay.is_some(),
+            "{text:?} must keep its unless_pay, got {:?} / {:?}",
+            def.effect,
+            def.unless_pay
+        );
+    }
+    assert!(matches!(
+        counter_unless_cost("Counter target spell unless its controller pays {2}."),
+        AbilityCost::Mana { .. }
+    ));
+}
+
+/// CR 118.12a: a mixed discard-or-mana disjunction is fully modelled (not the
+/// bare `Counter unless {2}` the unanchored "pays " scan produced).
+#[test]
+fn effect_counter_unless_discard_or_pays_is_one_of() {
+    let cost = counter_unless_cost(
+        "Counter target spell unless its controller discards a card or pays {2}.",
+    );
+    let AbilityCost::OneOf { costs } = cost else {
+        panic!("expected OneOf, got {cost:?}");
+    };
+    assert!(
+        matches!(
+            costs.as_slice(),
+            [AbilityCost::Discard { count, .. }, AbilityCost::Mana { .. }]
+                if *count == QuantityExpr::Fixed { value: 1 }
+        ),
+        "expected OneOf[Discard(1), Mana], got {costs:?}"
+    );
+}
+
 #[test]
 fn then_if_control_count_conditions_followup_transform() {
     let def = parse_effect_chain(
