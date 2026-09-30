@@ -571,8 +571,10 @@ fn any_ability_has_countered_spell_zone_redirect(parsed: &ParsedAbilities) -> bo
         })
 }
 
-/// CR 701.6a + CR 614.1a: the countered-spell redirect clause shape
-/// "put it <destination> instead of into <that player's|its owner's|their owner's> graveyard".
+/// CR 701.6a + CR 614.1a: the countered-spell redirect sentence
+/// "if that spell is countered this way, put it <destination> instead of into
+/// <that player's|its owner's|their owner's> graveyard", anchored at BOTH ends of the
+/// sentence unit so no unmodelled head or tail can ride along with the typed slot.
 /// The destinations are exactly those modelled by
 /// `SpellStackToGraveyardReplacement::{Library, Hand}` (Memory Lapse / Lapse of Certainty:
 /// top of library; Spell Crumple: bottom of library; Remand: hand).
@@ -583,7 +585,9 @@ fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), O
     use nom::combinator::{eof, opt, value};
     use nom::Parser;
 
-    let (rest, _) = tag("put it ").parse(input)?;
+    // The redirect must START the sentence: an unmodelled head ("..., you gain 2 life
+    // instead of ... and put it ...") must not be swallowed by the typed slot.
+    let (rest, _) = tag("if that spell is countered this way, put it ").parse(input)?;
     let (rest, _) = alt((
         tag("on top of its owner's library"),
         tag("on the bottom of its owner's library"),
@@ -609,23 +613,17 @@ fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), O
 /// EVERY " instead" sentence of the unit. The redirect slot carries no sentence-level
 /// provenance, so a second, unmodelled " instead" sentence must keep the warning:
 /// the discharge requires each such sentence to BE the redirect clause itself
-/// (`parse_countered_spell_redirect_shape`), not merely to mention "countered this way".
+/// (`parse_countered_spell_redirect_shape`, whole-unit match), not merely to contain it.
 fn countered_spell_zone_redirect_is_only_instead_marker(
     cleaned: &str,
     parsed: &ParsedAbilities,
 ) -> bool {
-    use crate::parser::oracle_nom::primitives::{
-        scan_at_word_boundaries, scan_contains, split_sentence_units,
-    };
+    use crate::parser::oracle_nom::primitives::{scan_contains, split_sentence_units};
     any_ability_has_countered_spell_zone_redirect(parsed)
         && split_sentence_units(cleaned)
             .into_iter()
             .filter(|sentence| scan_contains(sentence, "instead"))
-            .all(|sentence| {
-                scan_contains(sentence, "countered this way")
-                    && scan_at_word_boundaries(sentence, parse_countered_spell_redirect_shape)
-                        .is_some()
-            })
+            .all(|sentence| parse_countered_spell_redirect_shape(sentence).is_ok())
 }
 
 // ── Detector A: Replacement_Instead ─────────────────────────────────────
@@ -8540,6 +8538,25 @@ If you sang a song the whole time you were searching and shuffling, you may unta
             &same_sentence_tail,
             "Replacement_Instead"
         ));
+
+        // Hostile: an " instead" sentence that ENDS with the redirect shape but carries an
+        // unmodelled head must not be discharged — the shape is anchored to the start of
+        // the sentence. Probed on the predicate directly: through the full parse, such a
+        // sentence is caught by earlier gates before the redirect discharge is reached.
+        let memory_lapse = parse_named(memory_lapse_text, "Memory Lapse", &["Instant"]);
+        assert!(super::countered_spell_zone_redirect_is_only_instead_marker(
+            &memory_lapse_text.to_ascii_lowercase(),
+            &memory_lapse
+        ));
+        let with_head = format!(
+            "{memory_lapse_text} If a creature spell is countered this way, you gain 2 life \
+             instead and put it on top of its owner's library instead of into that player's \
+             graveyard."
+        )
+        .to_ascii_lowercase();
+        assert!(
+            !super::countered_spell_zone_redirect_is_only_instead_marker(&with_head, &memory_lapse)
+        );
     }
 
     /// CR 702.170c + CR 608.2c: "You may exile a card … If you do, it becomes
