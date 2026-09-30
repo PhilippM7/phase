@@ -8131,6 +8131,32 @@ fn effect_counter_unless_discards_hand_rider_is_never_dropped() {
 /// caster-scoped sub-ability of a "supported" Counter.
 #[test]
 fn effect_counter_unless_rider_merge_covers_prefixed_counter_heads() {
+    // SHAPE: reach the regrouping authority directly, including prefixes whose
+    // standalone full parse depends on a preceding gated instruction.
+    for head in [
+        "if you do, counter target spell unless its controller discards their hand",
+        "then counter target spell unless its controller discards their hand",
+        "you may counter target spell unless its controller discards their hand",
+    ] {
+        assert_eq!(parse_unless_payment(head), Some(whole_hand_discard_cost()));
+        let text = format!("{head} and draws a card.");
+        let chunks = vec![
+            ClauseChunk {
+                text: head.to_string(),
+                boundary_after: Some(ClauseBoundary::Comma),
+                leading_duration: None,
+            },
+            ClauseChunk {
+                text: "draws a card".to_string(),
+                boundary_after: None,
+                leading_duration: None,
+            },
+        ];
+        let merged = merge_counter_unless_cost_riders(&text, chunks);
+        assert_eq!(merged.len(), 1, "{text}: rider must remain with its payer");
+        assert_eq!(merged[0].text, text.trim_end_matches('.'));
+        assert!(parse_unless_payment(&merged[0].text).is_none());
+    }
     for text in [
         "If you do, counter target spell unless its controller discards their hand and draws a card.",
         "Then counter target spell unless its controller discards their hand and draws a card.",
