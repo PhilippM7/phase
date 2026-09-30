@@ -30,6 +30,7 @@ use super::oracle_ir::feature::{
     audit_units, scope_to_unit, AuditUnit, ItemIdTracks, OracleSemanticFeature,
 };
 use super::oracle_nom::error::OracleError;
+use super::oracle_nom::primitives::{scan_contains, split_sentence_units};
 use super::swallow_evidence::UnitEvidence;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ActivationRestriction, CastingPermission,
@@ -54,8 +55,8 @@ use crate::types::zones::Zone;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
-    character::complete::digit1,
-    combinator::{opt, value},
+    character::complete::{digit1, multispace0},
+    combinator::{eof, opt, value},
     Parser,
 };
 use std::ops::ControlFlow;
@@ -579,12 +580,6 @@ fn any_ability_has_countered_spell_zone_redirect(parsed: &ParsedAbilities) -> bo
 /// `SpellStackToGraveyardReplacement::{Library, Hand}` (Memory Lapse / Lapse of Certainty:
 /// top of library; Spell Crumple: bottom of library; Remand: hand).
 fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::character::complete::multispace0;
-    use nom::combinator::{eof, opt, value};
-    use nom::Parser;
-
     // The redirect must START the sentence: an unmodelled head ("..., you gain 2 life
     // instead of ... and put it ...") must not be swallowed by the typed slot.
     let (rest, _) = tag("if that spell is countered this way, put it ").parse(input)?;
@@ -611,19 +606,23 @@ fn parse_countered_spell_redirect_shape(input: &str) -> nom::IResult<&str, (), O
 
 /// CR 701.6a + CR 614.1a: true when the typed countered-spell redirect accounts for
 /// EVERY " instead" sentence of the unit. The redirect slot carries no sentence-level
-/// provenance, so a second, unmodelled " instead" sentence must keep the warning:
-/// the discharge requires each such sentence to BE the redirect clause itself
-/// (`parse_countered_spell_redirect_shape`, whole-unit match), not merely to contain it.
+/// provenance, so even a second matching redirect sentence must keep the warning.
+/// Require exactly one "instead" sentence, and require it to BE the redirect clause
+/// itself (`parse_countered_spell_redirect_shape`, whole-unit match).
 fn countered_spell_zone_redirect_is_only_instead_marker(
     cleaned: &str,
     parsed: &ParsedAbilities,
 ) -> bool {
-    use crate::parser::oracle_nom::primitives::{scan_contains, split_sentence_units};
-    any_ability_has_countered_spell_zone_redirect(parsed)
-        && split_sentence_units(cleaned)
-            .into_iter()
-            .filter(|sentence| scan_contains(sentence, "instead"))
-            .all(|sentence| parse_countered_spell_redirect_shape(sentence).is_ok())
+    if !any_ability_has_countered_spell_zone_redirect(parsed) {
+        return false;
+    }
+    let mut instead_sentences = split_sentence_units(cleaned)
+        .into_iter()
+        .filter(|sentence| scan_contains(sentence, "instead"));
+    let Some(sentence) = instead_sentences.next() else {
+        return false;
+    };
+    parse_countered_spell_redirect_shape(sentence).is_ok() && instead_sentences.next().is_none()
 }
 
 // ── Detector A: Replacement_Instead ─────────────────────────────────────
@@ -5940,8 +5939,9 @@ mod tests {
     use crate::types::ability::{
         AbilityDefinition, AbilityKind, CardSelectionMode, ChooseFromZoneConstraint, Chooser,
         ContinuousModification, CopyRetargetPermission, DamageModification, Effect, ManaProduction,
-        OutsideGameSourcePool, PlayerFilter, QuantityExpr, StaticCondition, StaticDefinition,
-        TargetFilter, TriggerCondition, ZoneChoiceCandidateSource, ZoneOwner,
+        OutsideGameSourcePool, PlayerFilter, QuantityExpr, SpellStackToGraveyardReplacement,
+        StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
+        ZoneChoiceCandidateSource, ZoneOwner,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::TrackedSetId;
@@ -8731,8 +8731,6 @@ If you sang a song the whole time you were searching and shuffling, you may unta
     /// slot), not fixture-tested.
     #[test]
     fn replacement_instead_accepts_countered_spell_zone_redirect() {
-        use crate::types::ability::{Effect, SpellStackToGraveyardReplacement};
-
         fn counter_zone(
             parsed: &crate::parser::oracle::ParsedAbilities,
         ) -> Option<&Option<SpellStackToGraveyardReplacement>> {
@@ -8818,6 +8816,24 @@ If you sang a song the whole time you were searching and shuffling, you may unta
         );
         assert!(has_swallowed_detector(
             &second_instead,
+            "Replacement_Instead"
+        ));
+
+        // One redirect slot cannot prove that two matching printed sentences were modeled.
+        let redirect_sentence =
+            crate::parser::oracle_nom::primitives::split_sentence_units(memory_lapse_text)
+                .into_iter()
+                .last()
+                .expect("Memory Lapse carries a redirect sentence");
+        let repeated_redirect = parse_named(
+            &format!("{memory_lapse_text} {redirect_sentence}"),
+            "Memory Lapse",
+            &["Instant"],
+        );
+        assert!(no_unimplemented(&repeated_redirect));
+        assert!(matches!(counter_zone(&repeated_redirect), Some(Some(_))));
+        assert!(has_swallowed_detector(
+            &repeated_redirect,
             "Replacement_Instead"
         ));
 
