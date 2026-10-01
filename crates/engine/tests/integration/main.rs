@@ -1809,3 +1809,4 @@ mod professor_hojo_activation_cost;
 mod ripple_reveal_choice_interaction;
 mod siphon_insight_mana_rider;
 mod uba_mask_draw_to_exile_play;
+mod welcome_the_dead;
