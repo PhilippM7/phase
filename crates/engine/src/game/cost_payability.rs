@@ -494,6 +494,31 @@ impl AbilityCost {
             }
             // Same {T}+TapCreatures source-exclusion logic as `is_payable`'s
             // Composite arm, but Mana sub-costs use the mana-specific check.
+            //
+            // EXCLUSION (fail closed): the mana-ability payment path resolves a
+            // chosen hand-discard through `find_non_self_discard`, which returns
+            // only the FIRST such leg, so a composite holding two or more of them
+            // would pay one discard and silently drop the rest (CR 601.2h forbids
+            // partial payment). Such a mana ability is therefore never offered;
+            // supporting it needs a multi-leg discard prompt in `mana_abilities`.
+            AbilityCost::Composite { costs }
+                if costs
+                    .iter()
+                    .filter(|c| {
+                        matches!(
+                            c,
+                            AbilityCost::Discard {
+                                selection: CardSelectionMode::Chosen,
+                                self_scope: DiscardSelfScope::FromHand,
+                                ..
+                            }
+                        )
+                    })
+                    .count()
+                    >= 2 =>
+            {
+                false
+            }
             AbilityCost::Composite { costs } => {
                 let has_tap = costs.iter().any(|c| matches!(c, AbilityCost::Tap));
                 costs.iter().all(|c| match c {
@@ -1701,6 +1726,31 @@ mod tests {
             source,
             &[chosen_hand_discard(None)]
         ));
+    }
+
+    /// Mana-ability exclusion (fail closed): the mana-ability payment path pays
+    /// only the first chosen hand-discard leg, so a composite with two such legs
+    /// is never offered, even when the hand could cover both.
+    ///
+    /// Reverting the exclusion arm flips the two-leg assertion to `true`.
+    #[test]
+    fn mana_ability_composite_with_two_discard_legs_is_not_offered() {
+        // Hand of three cards: every per-leg and joint check would pass.
+        let (state, source) = joint_discard_state(&[true, false, false]);
+        let two_legs = AbilityCost::Composite {
+            costs: vec![
+                chosen_hand_discard(Some(island_filter())),
+                chosen_hand_discard(None),
+            ],
+        };
+        let one_leg = AbilityCost::Composite {
+            costs: vec![chosen_hand_discard(Some(island_filter()))],
+        };
+        // Positive reach guard: a single chosen-discard leg is still offered.
+        assert!(one_leg.is_payable_for_mana_ability(&state, P0, source, 0));
+        assert!(!two_legs.is_payable_for_mana_ability(&state, P0, source, 0));
+        // The ordinary gate is unaffected by the mana-ability exclusion.
+        assert!(two_legs.is_payable(&state, P0, source));
     }
 
     #[test]
