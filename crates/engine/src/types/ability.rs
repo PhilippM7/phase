@@ -366,6 +366,11 @@ pub enum PerPlayerScope {
     /// population is a different leaf, to be added here (resolved through
     /// `players::opponents`) when a card's wording asks for one.
     OtherPlayers,
+    /// CR 102.2 + CR 102.3: every opponent of the ability's controller — the
+    /// population of "for each opponent" (Ultimate Magic: Meteor). Team
+    /// relative, resolved through `players::opponents`: unlike `OtherPlayers`,
+    /// a teammate is excluded.
+    Opponents,
     /// CR 115.1: every player chosen as a `Player` target of the resolving
     /// ability. CR 601.2c: an "up to N" selection may be empty, which disposes
     /// the iteration immediately.
@@ -514,6 +519,28 @@ mod zone_owner_migration_tests {
         assert_eq!(
             serde_json::to_string(&ZoneOwner::Controller).expect("serialize"),
             "\"Controller\""
+        );
+    }
+
+    /// CR 102.2 + CR 102.3: the opponent population is its own written value,
+    /// distinct from `OtherPlayers`, and the legacy `EachOpponent` alias still
+    /// migrates onto `OtherPlayers` (the population it always meant).
+    #[test]
+    fn opponents_population_round_trips_without_disturbing_the_legacy_alias() {
+        let owner = ZoneOwner::Each(PerPlayerScope::Opponents);
+        let json = serde_json::to_string(&owner).expect("serialize");
+        assert_eq!(json, "{\"Each\":\"Opponents\"}");
+        assert_eq!(
+            serde_json::from_str::<ZoneOwner>(&json).expect("round trip"),
+            owner
+        );
+        assert_eq!(
+            serde_json::from_str::<ZoneOwner>("\"EachOpponent\"").expect("legacy"),
+            ZoneOwner::Each(PerPlayerScope::OtherPlayers)
+        );
+        assert_eq!(
+            serde_json::from_str::<ZoneOwner>("{\"Each\":\"OtherPlayers\"}").expect("existing"),
+            ZoneOwner::Each(PerPlayerScope::OtherPlayers)
         );
     }
 }
@@ -28948,6 +28975,11 @@ pub enum TriggerCondition {
     /// `if` beside it stays rechecked. Pugnacious Hammerskull's 2023-11-10
     /// ruling: a Dinosaur that enters after the attack declaration does not stop
     /// the stun counter.
+    /// The same event-time reading carries a count qualifier that is part of the
+    /// trigger event itself when no player anchors it — an unscoped subject-led
+    /// "Whenever two or more <subject> attack" (Argent Dais) compares the number
+    /// of attacking objects of the subject class when attackers are declared
+    /// (CR 508.1a + CR 603.2); there is no intervening "if" to recheck.
     EventTime { condition: Box<TriggerCondition> },
 }
 
