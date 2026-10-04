@@ -2800,7 +2800,8 @@ mod tests {
                 },
             },
             None,
-        );
+        )
+        .expect("the fixture begins with no carrier installed");
         state.push_optional_effect_frame(OptionalEffectFrame {
             ability: Box::new(ability),
             trigger_event: None,
@@ -4745,6 +4746,7 @@ mod tests {
             candidates: vec![],
             kind: Default::default(),
             last_applied_decides: false,
+            remember_identity: None,
         };
         state.pending_replacement = Some(crate::types::game_state::PendingReplacement {
             proposed: ProposedEvent::Draw {
