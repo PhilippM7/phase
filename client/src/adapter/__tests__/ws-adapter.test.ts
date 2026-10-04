@@ -699,6 +699,33 @@ describe("WebSocketAdapter", () => {
       },
     });
 
+    it("exports authoritative state through the native bridge without a WebSocket URL", async () => {
+      const nativeAdapter = new WebSocketAdapter(
+        "native-engine",
+        "host",
+        { main_deck: [], sideboard: [] },
+        undefined,
+        undefined,
+        undefined,
+        "Player",
+        nativeAiOptions(() => new MockWebSocket("native-engine") as unknown as PhaseSocketTransport),
+      );
+      const initPromise = nativeAdapter.initialize();
+      const nativeSocket = await completeHandshake(nativeAdapter);
+      nativeSocket.dispatchSynthetic("message", JSON.stringify({
+        type: "GameStarted",
+        data: { state: createMockState(), your_player: 0 },
+      }));
+      await initPromise;
+
+      const exported = nativeAdapter.exportPersistenceState();
+      expect(nativeSocket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: "ExportAuthoritativeState" }));
+      nativeSocket.dispatchSynthetic("message", JSON.stringify({
+        type: "AuthoritativeStateExport", data: { state: "{\"state\":{}}" },
+      }));
+      await expect(exported).resolves.toBe("{\"state\":{}}");
+    });
+
     it("uses the bridge factory with the full camelCase AI seat wire shape", async () => {
       MockWebSocket.last = null;
       const socketFactory = vi.fn(
@@ -792,7 +819,6 @@ describe("WebSocketAdapter", () => {
         default_deck_copy_limit: { type: "UpTo", data: 1 },
         uses_commander: true,
         allow_debug_actions: false,
-        allow_experimental_dungeons: false,
       };
       const nativeAdapter = new WebSocketAdapter(
         "native-engine",
@@ -911,7 +937,6 @@ describe("WebSocketAdapter", () => {
         default_deck_copy_limit: { type: "UpTo", data: 1 },
         uses_commander: true,
         allow_debug_actions: false,
-        allow_experimental_dungeons: false,
       };
       const pregameAdapter = new WebSocketAdapter(
         "native-engine",
@@ -1057,7 +1082,7 @@ describe("WebSocketAdapter", () => {
 
     it("settles an export when native session identity validation fails", async () => {
       const nativeAdapter = new WebSocketAdapter(
-        "wss://localhost:9374/ws",
+        "native-engine",
         "join",
         { main_deck: [], sideboard: [] },
         undefined,
@@ -1856,6 +1881,19 @@ describe("WebSocketAdapter", () => {
           data: { action: { type: "PassPriority" } },
         }),
       );
+    });
+
+    it("sends only the compact replacement selector and settles ActionNoOp", async () => {
+      const selector = `r${"a".repeat(64)}`;
+      const action: GameAction = { type: "SetReplacementAutoChoice", data: { selector } };
+      ws.send.mockClear();
+      const pending = adapter.submitAction(action, 0);
+      expect(JSON.parse(ws.send.mock.lastCall![0] as string)).toEqual({
+        type: "Action",
+        data: { action: { type: "SetReplacementAutoChoice", data: { selector } } },
+      });
+      ws.dispatchSynthetic("message", JSON.stringify({ type: "ActionNoOp" }));
+      await pending;
     });
 
     it.each(["Card", "Token"] as const)(
