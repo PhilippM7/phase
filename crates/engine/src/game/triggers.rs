@@ -37427,7 +37427,7 @@ pub mod tests {
         );
     }
 
-    /// CR 603.2c + CR 603.4 + CR 603.10a: Kotis, Sibsig Champion's batched
+    /// CR 603.2c + CR 603.4 + CR 603.6a: Kotis, Sibsig Champion's batched
     /// "one or more of them entered from a graveyard or was cast from a
     /// graveyard" intervening-if is existential over the simultaneous batch:
     /// it fires exactly once when at least one entrant satisfies either leg,
@@ -37483,18 +37483,35 @@ pub mod tests {
             state.stack.len() + usize::from(state.pending_trigger.is_some())
         };
 
-        use Origin::{CastFromGraveyard, CastFromHand, GraveyardEntry};
         // (i) graveyard entry + hand cast: one firing (the existential leg is A).
-        assert_eq!(stacked_triggers(&[GraveyardEntry, CastFromHand]), 1);
+        assert_eq!(
+            stacked_triggers(&[Origin::GraveyardEntry, Origin::CastFromHand]),
+            1
+        );
         // (iii) same pair, other order.
-        assert_eq!(stacked_triggers(&[CastFromHand, GraveyardEntry]), 1);
+        assert_eq!(
+            stacked_triggers(&[Origin::CastFromHand, Origin::GraveyardEntry]),
+            1
+        );
         // (ii) graveyard entry + cast from graveyard: both legs hold, still once.
-        assert_eq!(stacked_triggers(&[GraveyardEntry, CastFromGraveyard]), 1);
-        assert_eq!(stacked_triggers(&[CastFromGraveyard, GraveyardEntry]), 1);
+        assert_eq!(
+            stacked_triggers(&[Origin::GraveyardEntry, Origin::CastFromGraveyard]),
+            1
+        );
+        assert_eq!(
+            stacked_triggers(&[Origin::CastFromGraveyard, Origin::GraveyardEntry]),
+            1
+        );
         // Cast-from-graveyard alone reaches the WasCast leg.
-        assert_eq!(stacked_triggers(&[CastFromHand, CastFromGraveyard]), 1);
+        assert_eq!(
+            stacked_triggers(&[Origin::CastFromHand, Origin::CastFromGraveyard]),
+            1
+        );
         // (iv) neither entrant qualifies: no firing (reach-guard for the above).
-        assert_eq!(stacked_triggers(&[CastFromHand, CastFromHand]), 0);
+        assert_eq!(
+            stacked_triggers(&[Origin::CastFromHand, Origin::CastFromHand]),
+            0
+        );
     }
 
     #[test]

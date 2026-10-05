@@ -7,8 +7,8 @@
 //! > counters on Kotis.
 //!
 //! CR 603.4 — intervening-if; CR 603.2c — one trigger per batch of
-//! simultaneous entries; CR 603.10a — the check reads each entrant's origin /
-//! cast provenance.
+//! simultaneous entries; CR 603.6a — enters-the-battlefield triggers check
+//! permanents against the entry event.
 //!
 //! The clause was swallowed (`unparsed_condition`), so Kotis grew on EVERY
 //! creature entry. Rows: parse fidelity, hand cast (no), reanimation (yes),
