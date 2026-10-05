@@ -39020,6 +39020,14 @@ fn for_each_creature_assign_damage_as_though_unblocked_declines_unmodeled_forms(
         "For each frobnicator you control, you may have that creature assign its combat damage as though it weren't blocked.",
         // Unparsable gate: must not degrade to an ungated grant.
         "As long as the moon is full, for each creature you control, you may have that creature assign its combat damage as though it weren't blocked.",
+        // Opponent-scoped subject.
+        "For each creature your opponents control, you may have that creature assign its combat damage as though it weren't blocked.",
+        // Targeted player scope.
+        "For each creature target player controls, you may have that creature assign its combat damage as though it weren't blocked.",
+        // Trailing text after an otherwise valid gated line.
+        "As long as ~ is attacking, for each creature you control, you may have that creature assign its combat damage as though it weren't blocked and gains flying.",
+        // Or subject (multi-type union is unmodeled).
+        "For each creature or planeswalker you control, you may have that creature assign its combat damage as though it weren't blocked.",
     ] {
         assert!(!grants_unblocked(text), "{text}: must not yield a grant");
     }
