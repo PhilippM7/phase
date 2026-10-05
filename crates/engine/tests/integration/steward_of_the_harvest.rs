@@ -366,7 +366,7 @@ fn noncreature_land_mana_activation_ignores_summoning_sickness() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let land = scenario
-        .add_basic_land(P0, ManaColor::Green)
+        .add_land_from_oracle(P0, "Mana land", "{T}: Add {G}.")
         .with_summoning_sickness()
         .id();
     let mut runner = scenario.build();
